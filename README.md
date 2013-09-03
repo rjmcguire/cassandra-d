@@ -10,7 +10,7 @@ There are currently no helpers, you can only execute CQL inputting or retrieving
 #### Works:
 - Queries
 - Prepared Statements
-- 
+
 ### Todo:
 - UUID stuff
 - Provide helper functions/templates
