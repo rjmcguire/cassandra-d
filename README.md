@@ -16,3 +16,4 @@ There are currently no helpers, you can only execute CQL inputting or retrieving
 - Provide helper functions/templates
 - Clean up code
 - Lots!
+build the test with: dmd -main -unittest cql.d tcpconnection.d utils.d
