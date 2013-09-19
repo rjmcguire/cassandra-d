@@ -20,721 +20,7 @@ version (Have_vibe_d) {
 	import tcpconnection;
 }
 
-// some types
-unittest {
-	assert(int.sizeof == 4, "int is not 32 bits"~ to!string(int.sizeof));
-}
-/**
- *                             CQL BINARY PROTOCOL v1
- *
- *
- *Table of Contents
- *
- *  1. Overview
- *  2. Frame header
- *    2.1. version
- *    2.2. flags
- *    2.3. stream
- *    2.4. opcode
- *    2.5. length
- *  3. Notations
- *  4. Messages
- *    4.1. Requests
- *      4.1.1. STARTUP
- *      4.1.2. CREDENTIALS
- *      4.1.3. OPTIONS
- *      4.1.4. QUERY
- *      4.1.5. PREPARE
- *      4.1.6. EXECUTE
- *      4.1.7. REGISTER
- *    4.2. Responses
- *      4.2.1. ERROR
- *      4.2.2. READY
- *      4.2.3. AUTHENTICATE
- *      4.2.4. SUPPORTED
- *      4.2.5. RESULT
- *        4.2.5.1. Void
- *        4.2.5.2. Rows
- *        4.2.5.3. Set_keyspace
- *        4.2.5.4. Prepared
- *        4.2.5.5. Schema_change
- *      4.2.6. EVENT
- *  5. Compression
- *  6. Collection types
- *  7. Error codes
- *
- *
- *1. Overview
- *
- *  The CQL binary protocol is a frame based protocol. Frames are defined as:
- *
- *      0         8        16        24        32
- *      +---------+---------+---------+---------+
- *      | version |  flags  | stream  | opcode  |
- *      +---------+---------+---------+---------+
- *      |                length                 |
- *      +---------+---------+---------+---------+
- *      |                                       |
- *      .            ...  body ...              .
- *      .                                       .
- *      .                                       .
- *      +----------------------------------------
- *
- *  The protocol is big-endian (network byte order).
- *
- *  Each frame contains a fixed size header (8 bytes) followed by a variable size
- *  body. The header is described in Section 2. The content of the body depends
- *  on the header opcode value (the body can in particular be empty for some
- *  opcode values). The list of allowed opcode is defined Section 2.3 and the
- *  details of each corresponding message is described Section 4.
- *
- *  The protocol distinguishes 2 types of frames: requests and responses. Requests
- *  are those frame sent by the clients to the server, response are the ones sent
- *  by the server. Note however that while communication are initiated by the
- *  client with the server responding to request, the protocol may likely add
- *  server pushes in the future, so responses does not obligatory come right after
- *  a client request.
- *
- *  Note to client implementors: clients library should always assume that the
- *  body of a given frame may contain more data than what is described in this
- *  document. It will however always be safe to ignore the remaining of the frame
- *  body in such cases. The reason is that this may allow to sometimes extend the
- *  protocol with optional features without needing to change the protocol
- *  version.
- *
- *
- *2. Frame header
- */
-struct FrameHeader {
-
-	/**
-	 *2.1. version
-	 *
-	 *  The version is a single byte that indicate both the direction of the message
-	 *  (request or response) and the version of the protocol in use. The up-most bit
-	 *  of version is used to define the direction of the message: 0 indicates a
-	 *  request, 1 indicates a responses. This can be useful for protocol analyzers to
-	 *  distinguish the nature of the packet from the direction which it is moving.
-	 *  The rest of that byte is the protocol version (1 for the protocol defined in
-	 *  this document). In other words, for this version of the protocol, version will
-	 *  have one of:
-	 *    0x01    Request frame for this protocol version
-	 *    0x81    Response frame for this protocol version
-	 */
-	enum Version : ubyte {
-		V1Request = 0x01,
-		V1Response =  0x81,
-		V2Request = 0x02,
-		V2Response = 0x82
-	}
-	Version version_;
-
-	/**
-	 *2.2. flags
-	 *
-	 *  Flags applying to this frame. The flags have the following meaning (described
-	 *  by the mask that allow to select them):
-	 *    0x01: Compression flag. If set, the frame body is compressed. The actual
-	 *          compression to use should have been set up beforehand through the
-	 *          Startup message (which thus cannot be compressed; Section 4.1.1).
-	 *    0x02: Tracing flag. For a request frame, this indicate the client requires
-	 *          tracing of the request. Note that not all requests support tracing.
-	 *          Currently, only QUERY, PREPARE and EXECUTE queries support tracing.
-	 *          Other requests will simply ignore the tracing flag if set. If a
-	 *          request support tracing and the tracing flag was set, the response to
-	 *          this request will have the tracing flag set and contain tracing
-	 *          information.
-	 *          If a response frame has the tracing flag set, its body contains
-	 *          a tracing ID. The tracing ID is a [uuid] and is the first thing in
-	 *          the frame body. The rest of the body will then be the usual body
-	 *          corresponding to the response opcode.
-	 *
-	 *  The rest of the flags is currently unused and ignored.
-	 */
-	mixin(bitfields!(
-		bool,"compress", 1,
-		bool,"trace", 1,
-		uint, "", 6
-		));
-	bool hasTracing() { if (this.trace) return true; return false; }
-
-	/**2.3. stream
-	 *
-	 *  A frame has a stream id (one signed byte). When sending request messages, this
-	 *  stream id must be set by the client to a positive byte (negative stream id
-	 *  are reserved for streams initiated by the server; currently all EVENT messages
-	 *  (section 4.2.6) have a streamId of -1). If a client sends a request message
-	 *  with the stream id X, it is guaranteed that the stream id of the response to
-	 *  that message will be X.
-	 *
-	 *  This allow to deal with the asynchronous nature of the protocol. If a client
-	 *  sends multiple messages simultaneously (without waiting for responses), there
-	 *  is no guarantee on the order of the responses. For instance, if the client
-	 *  writes REQ_1, REQ_2, REQ_3 on the wire (in that order), the server might
-	 *  respond to REQ_3 (or REQ_2) first. Assigning different stream id to these 3
-	 *  requests allows the client to distinguish to which request an received answer
-	 *  respond to. As there can only be 128 different simultaneous stream, it is up
-	 *  to the client to reuse stream id.
-	 *
-	 *  Note that clients are free to use the protocol synchronously (i.e. wait for
-	 *  the response to REQ_N before sending REQ_N+1). In that case, the stream id
-	 *  can be safely set to 0. Clients should also feel free to use only a subset of
-	 *  the 128 maximum possible stream ids if it is simpler for those
-	 *  implementation.
-	 */
-	byte streamid; bool isServerStream() { if (streamid < 0) return true; return false; } bool isEvent() { if (streamid==-1) return true; return false;}
-
-	/**2.4. opcode
-	 *
-	 *  An integer byte that distinguish the actual message:
-	 *    0x00    ERROR
-	 *    0x01    STARTUP
-	 *    0x02    READY
-	 *    0x03    AUTHENTICATE
-	 *    0x04    CREDENTIALS
-	 *    0x05    OPTIONS
-	 *    0x06    SUPPORTED
-	 *    0x07    QUERY
-	 *    0x08    RESULT
-	 *    0x09    PREPARE
-	 *    0x0A    EXECUTE
-	 *    0x0B    REGISTER
-	 *    0x0C    EVENT
-	 *
-	 *  Messages are described in Section 4.
-	 */
-	enum OpCode : byte {
-		ERROR,
-		STARTUP,
-		READY,
-		AUTHENTICATE,
-		CREDENTIALS,
-		OPTIONS,
-		SUPPORTED,
-		QUERY,
-		RESULT,
-		PREPARE,
-		EXECUTE,
-		REGISTER,
-		EVENT
-	};
-	OpCode opcode;
-	bool isERROR() { if (opcode == OpCode.ERROR) return true; return false; }
-	bool isSTARTUP() { if (opcode == OpCode.STARTUP) return true; return false; }
-	bool isREADY() { if (opcode == OpCode.READY) return true; return false; }
-	bool isAUTHENTICATE() { if (opcode == OpCode.AUTHENTICATE) return true; return false; }
-	bool isCREDENTIALS() { if (opcode == OpCode.CREDENTIALS) return true; return false; }
-	bool isOPTIONS() { if (opcode == OpCode.OPTIONS) return true; return false; }
-	bool isSUPPORTED() { if (opcode == OpCode.SUPPORTED) return true; return false; }
-	bool isQUERY() { if (opcode == OpCode.QUERY) return true; return false; }
-	bool isRESULT() { if (opcode == OpCode.RESULT) return true; return false; }
-	bool isPREPARE() { if (opcode == OpCode.PREPARE) return true; return false; }
-	bool isEXECUTE() { if (opcode == OpCode.EXECUTE) return true; return false; }
-	bool isREGISTER() { if (opcode == OpCode.REGISTER) return true; return false; }
-	bool isEVENT() { if (opcode == OpCode.EVENT) return true; return false; }
-
-
-	/**
-	 *2.5. length
-	 *
-	 *  A 4 byte integer representing the length of the body of the frame (note:
-	 *  currently a frame is limited to 256MB in length).
-	 */
-	int length;
-
-
-	ubyte[] bytes() {
-		import std.bitmanip : write;
-		import std.array : appender;
-		auto buffer = appender!(ubyte[])();
-		foreach (i,v; this.tupleof) {
-			if (is( typeof(v) : int )) {
-				ubyte[] buf = [0,0,0,0,0,0,0,0];
-				buf.write!(typeof(v))(v, 0);
-				buffer.put(buf[0..typeof(v).sizeof]);
-			}
-		}
-		return buffer.data;
-	}
-}
-
-
-int getIntLength(Appender!(ubyte[]) appender) {
-	assert(appender.data.length < int.max);
-	return cast(int)appender.data.length;
-}
-
-FrameHeader readFrameHeader(TcpConnection s, ref int counter) {
-	assert(counter == 0, to!string(counter) ~" bytes unread from last Frame");
-	counter = int.max;
-	writefln("===================read frame header========================");
-	auto fh = FrameHeader();
-	fh.version_ = cast(FrameHeader.Version)readByte(s, counter);
-	readByte(s, counter); // FIXME: this should load into flags
-	fh.streamid = readByte(s, counter);
-	fh.opcode = cast(FrameHeader.OpCode)readByte(s, counter);
-	readIntNotNULL(fh.length, s, counter);
-
-	counter = fh.length;
-	writefln("=================== end read frame header===================");
-	//writefln("go %d data to play", counter);
-
-	return fh;
-}
-byte readByte(TcpConnection s, ref int counter) {
-	ubyte[1] buf;
-	auto tmp = buf[0..$];
-	s.read(tmp);
-	counter--;
-	return buf[0];
-}
-
-/**
- *3. Notations
- *
- *  To describe the layout of the frame body for the messages in Section 4, we
- *  define the following:
- *
- *    [int]          A 4 bytes integer
- */
-int* readInt(ref int ptr, TcpConnection s, ref int counter) {
-	import std.bitmanip : read;
-	ubyte[int.sizeof] buffer;
-	auto tmp = buffer[0..$];
-	s.read(tmp);
-	auto buf = buffer[0..int.sizeof];
-
-	ptr = buf.read!int();
-	//writefln("readInt %d %s", ptr, buffer);
-	/*if (r >= int.max) while (true) {
-		buffer[] = [0,0,0,0];
-		auto n1 = s.read(buffer);
-		writefln("readInt bork %s bytes:%d", buffer, n1);
-		buf = buffer[0..int.sizeof];
-		r = buf.read!uint();
-	}*/
-	counter -= int.sizeof;
-	if (ptr == -1) {
-		//throw new Exception("NULL");
-		return null;
-	}
-	return &ptr;
-}
-int readIntNotNULL(ref int ptr, TcpConnection s, ref int counter) {
-	auto tmp = readInt(ptr, s, counter);
-	if (tmp is null) throw new Exception("NullException");
-	return *tmp;
-}
-/*void write(TcpConnection s, int n) {
-	import std.bitmanip : write;
-
-	ubyte[] buffer = [0,0,0,0,0,0,0,0];
-	buffer.write!int(n,0);
-
-	if (s.send(buffer[0..n.sizeof]) != n.sizeof) {
-		throw new Exception("send failed", s.getErrorText);
-	}
-	writefln("wrote int %s vs %d", buffer, n);
-}*/
-
-///    [short]        A 2 bytes unsigned integer
-short readShort(TcpConnection s, ref int counter) {
-	import std.bitmanip : read;
-	ubyte[short.sizeof] buffer;
-	auto tmp = buffer[];
-	s.read(tmp);
-	auto buf = buffer[0..short.sizeof];
-	auto r = buf.read!ushort();
-	//writefln("readShort %d @ %d", r, counter);
-	counter -= short.sizeof;
-	return cast(short)r;
-}
-/*void write(TcpConnection s, short n) {
-	import std.bitmanip : write;
-
-	ubyte[] buffer = [0,0,0,0,0,0,0,0];
-	buffer.write!short(n,0);
-
-	if (s.send(buffer[0..n.sizeof]) != n.sizeof) {
-		throw new Exception("send failed", s.getErrorText);
-	}
-	writefln("wrote short %s vs %d", buffer, n);
-}*/
- /**    [string]       A [short] n, followed by n bytes representing an UTF-8
- *                   string.
- */
-ubyte[] readRawBytes(TcpConnection s, ref int counter, int len) {
-	ubyte[] buf = new ubyte[](len);
-	auto tmp = buf[];
-	s.read(tmp);
-	counter -= buf.length;
-	return buf;
-}
-string readShortString(TcpConnection s, ref int counter) {
-	auto len = readShort(s, counter);
-	if (len < 0) { return null; }
-
-	//writefln("readString %d @ %d", len, counter);
-	auto bytes = readRawBytes(s, counter, len);
-	string str = cast(string)bytes[0..len];
-	return str;
-}
-/*void write(TcpConnection s, string str) {
-	writeln("writing string");
-	if (str.length < short.max) {
-		write(s, cast(short)str.length);
-	} else if (str.length < int.max) {
-		write(s, cast(int)str.length);
-	}
-	if (s.send(cast(ubyte[])str.ptr[0..str.length]) != str.length) {
-		throw new Exception("send failed", s.getErrorText);
-	}
-	writeln("wrote string");
-}*/
-
-///    [long string]  An [int] n, followed by n bytes representing an UTF-8 string.
-string readLongString(TcpConnection s, ref int counter) {
-	int len;
-	auto tmp = readInt(len, s, counter);
-	if (tmp is null) { return null; }
-
-	writefln("readString %d @ %d", len, counter);
-	auto bytes = readRawBytes(s, counter, len);
-	string str = cast(string)bytes[0..len];
-	return str;
-}
-
-
-/**    [uuid]         A 16 bytes long uuid.
- *    [string list]  A [short] n, followed by n [string].
- */
-alias string[] StringList;
-StringList readStringList(TcpConnection s, ref int counter) {
-	StringList ret;
-	auto len = readShort(s, counter);
-
-	for (int i=0; i<len && counter>0; i++) {
-		ret ~= readShortString(s, counter);
-	}
-	if (ret.length < len && counter <= 0)
-		throw new Exception("ran out of data");
-	return ret;
-}
-
-/**    [bytes]        A [int] n, followed by n bytes if n >= 0. If n < 0,
- *                   no byte should follow and the value represented is `null`.
- */
-ubyte[] readIntBytes(TcpConnection s, ref int counter) {
-	int len;
-	auto tmp = readInt(len, s, counter);
-	if (tmp is null) {
-		//writefln("reading (null) bytes");
-		return null;
-	}
-	//writefln("reading int(%d) bytes", len);
-
-
-	ubyte[] buf = new ubyte[](len);
-	s.read(buf);
-	//writefln("got bytes: %s", cast(char[])buf);
-	counter -= buf.length;
-	return buf;
-}
-auto appendIntBytes(T)(Appender!(ubyte[]) appender, T data) {
-	static if (is(T == string) || is(T == ubyte[]) || is(T == byte[])) {
-		assert(data.length < int.max);
-		append(appender, cast(int)data.length);
-		append(appender, cast(ubyte[])data.ptr[0..data.length]);
-	} else static if (isArray!T) {
-		assert(data.length < uint.max);
-		auto tmpapp = std.array.appender!(ubyte[])();
-		tmpapp.appendRawBytes(cast(ushort)data.length);
-		foreach (item; data) {
-			assert(item.length < ushort.max);
-			tmpapp.appendShortBytes(item);
-		}
-		appender.appendIntBytes(tmpapp.data);
-	} else static if (isAssociativeArray!T) {
-		assert(data.length < uint.max);
-		auto tmpapp = std.array.appender!(ubyte[])();
-		tmpapp.appendRawBytes(cast(ushort)data.length);
-		foreach (key,value; data) {
-			tmpapp.appendShortBytes(key);
-			tmpapp.appendShortBytes(value);
-		}
-		appender.appendIntBytes(tmpapp.data);
-	} else static if (isIntegral!T || is(T == double) || is(T == float) || is(T == ushort)) {
-		import std.bitmanip : write;
-
-		assert(T.sizeof < int.max);
-		ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
-		append(appender, cast(int)T.sizeof);
-		buffer.write!(T)(data,0);
-		appender.append(buffer[0..T.sizeof]);
-	} else static if (isBoolean!T) {
-		import std.bitmanip : write;
-
-		ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
-		append(appender, cast(int)1);
-		if (data)
-			buffer.write!(byte)(1,0);
-		else
-			buffer.write!(byte)(0,0);
-		appender.append(buffer[0 .. 1]);
-	} else {
-		assert(0, "can't append raw bytes for type: "~ T.stringof);
-	}
-	return appender;
-}
-
-/**    [short bytes]  A [short] n, followed by n bytes if n >= 0.
- */
-ubyte[] readShortBytes(TcpConnection s, ref int counter) {
-	auto len = readShort(s, counter);
-	if (len==0) { return null; }
-
-	ubyte[] buf = new ubyte[](len);
-	s.read(buf);
-	counter -= buf.length;
-	return buf;
-}
-auto appendShortBytes(T)(Appender!(ubyte[]) appender, T data) {
-	static if (is (T == ubyte[]) || is (T == string)) {
-		assert(data.length < short.max);
-		append(appender, cast(short)data.length);
-
-
-		append(appender, cast(ubyte[])data.ptr[0..data.length]);
-	} else {
-		assert(0, "appendShortBytes can't append type: "~ T.stringof);
-	}
-	return appender;
-}
-
-/**
- *    [option]       A pair of <id><value> where <id> is a [short] representing
- *                   the option id and <value> depends on that option (and can be
- *                   of size 0). The supported id (and the corresponding <value>)
- *                   will be described when this is used.
- */
-struct Option {
-	/// See Section: 4.2.5.2.
-	enum Type {
-		Custom = 0x0000,
-		Ascii = 0x0001,
-		Bigint = 0x0002,
-		Blob = 0x0003,
-		Boolean = 0x0004,
-		Counter = 0x0005,
-		Decimal = 0x0006,
-		Double = 0x0007,
-		Float = 0x0008,
-		Int = 0x0009,
-		Text = 0x000A,
-		Timestamp = 0x000B,
-		Uuid = 0x000C,
-		Varchar = 0x000D,
-		Varint = 0x000E,
-		Timeuuid = 0x000F,
-		Inet = 0x0010,
-		List = 0x0020,
-		Map = 0x0021,
-		Set = 0x0022
-	}
-	Type id;
-	union {
-		string string_value;
-		Option* option_value;
-		Option*[2] key_values_option_value;
-	}
-
-	string toString() {
-		auto buf = appender!string();
-		formattedWrite(buf, "%s ", id);
-		if (id == Option.Type.Custom) {
-			formattedWrite(buf, "%s", string_value);
-		} else if (id == Option.Type.List || id == Option.Type.Set) {
-			formattedWrite(buf, "%s", option_value);
-		} else if (id == Option.Type.Map) {
-			formattedWrite(buf, "%s[%s]", key_values_option_value[1], key_values_option_value[0]);
-		}
-		return buf.data;
-	}
-
-}
-
-
-/**    [option list]  A [short] n, followed by n [option].
- *    [inet]         An address (ip and port) to a node. It consists of one
- *                   [byte] n, that represents the address size, followed by n
- *                   [byte] representing the IP address (in practice n can only be
- *                   either 4 (IPv4) or 16 (IPv6)), following by one [int]
- *                   representing the port.
- *    [consistency]  A consistency level specification. This is a [short]
- *                   representing a consistency level with the following
- *                   correspondance:
- *                     0x0000    ANY
- *                     0x0001    ONE
- *                     0x0002    TWO
- *                     0x0003    THREE
- *                     0x0004    QUORUM
- *                     0x0005    ALL
- *                     0x0006    LOCAL_QUORUM
- *                     0x0007    EACH_QUORUM
- */
-enum Consistency : ushort  {
-	ANY = 0x0000,
-	ONE,
-	TWO,
-	THREE,
-	QUORUM,
-	ALL,
-	LOCAL_QUORUM,
-	EACH_QUORUM
-};
-
-/**
- *    [string map]      A [short] n, followed by n pair <k><v> where <k> and <v> are [string].
- */
-typedef string[string] StringMap;
-
-auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
-	import std.bitmanip : write;
-
-	ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
-	//writeln(typeof(args).stringof);
-	foreach (arg; args) {
-		//writeln(typeof(arg).stringof);
-		static if (is(typeof(arg) == ubyte[])) {
-			appender.put(arg);
-			//writefln("appended type: %s as: %s", typeof(arg).stringof, appender.data[appender.data.length-arg.length..$]);
-		} else static if (is(typeof(arg) == short) || is(typeof(arg) == int) || is(typeof(arg) == long) || is(typeof(arg) == ulong) || is(typeof(arg) == double)) {
-			buffer.write!(typeof(arg))(arg,0);
-			appender.put(buffer[0..typeof(arg).sizeof]);
-			//writefln("appended type: %s as: %s", typeof(arg).stringof, appender.data[appender.data.length-typeof(arg).sizeof..$]);
-		} else static if (is(typeof(arg) == string)) {
-			assert(arg.length < short.max);
-			appender.append(cast(short)arg.length);
-
-			appender.append(cast(ubyte[])arg[0..arg.length]);
-			//writefln("appended type: %s as: %s", typeof(arg).stringof, appender.data[appender.data.length-arg.length..$]);
-		} else static if (__traits(compiles, mixin("appendOverride(appender, arg)"))) {//hasUFCSmember!(typeof(arg),"toBytes")) {
-			auto oldlen = appender.data.length;
-			appendOverride(appender, arg);
-			//writefln("appended type: %s as: %s", typeof(arg).stringof, appender.data[oldlen..$]);
-		} else {
-			assert(0, "cannot handle append of "~ typeof(arg).stringof);
-		}
-
-	}
-
-	return appender;
-}
-//todo: add all the append functions features to append!T(appender,T)
-auto appendRawBytes(T)(Appender!(ubyte[]) appender, T data) {
-	import std.bitmanip : write;
-	static if (is (T == ushort) || is(T==uint) || is(T==int)) {
-		ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
-		buffer.write!(T)(data,0);
-		appender.append(buffer[0..T.sizeof]);
-	} else {
-		assert(0, "can't use appendRawBytes on type: "~T.stringof);
-	}
-}
-
-auto appendLongString(Appender!(ubyte[]) appender, string data) {
-	assert(data.length < int.max);
-	append(appender, cast(int)data.length);
-
-
-	append(appender, cast(ubyte[])data.ptr[0..data.length]);
-	return appender;
-}
-
-auto appendOverride(Appender!(ubyte[]) appender, StringMap sm) {
-	assert(sm.length < short.max);
-
-	appender.append(cast(short)sm.length);
-	foreach (k,v; sm) {
-		appender.append(k);
-		appender.append(v);
-	}
-	return appender;
-}
-auto appendOverride(Appender!(ubyte[]) appender, Consistency c) {
-	appender.append(cast(short)c);
-}
-
-auto appendOverride(Appender!(ubyte[]) appender, bool b) {
-	if (b)
-		appender.append(cast(int)0x00000001);
-	else
-		appender.append(cast(int)0x00000000);
-}
-auto appendOverride(Appender!(ubyte[]) appender, string[] strs) {
-	foreach (str; strs) {
-		appender.append(str);
-	}
-}
-
-/*auto append(Appender!(ubyte[]) appender, ubyte[] data) {
-	appender.put(data);
-	return appender;
-}
-auto append(Appender!(ubyte[]) appender, short data) {
-	import std.bitmanip : write;
-
-	ubyte[] buffer = [0,0,0,0,0,0,0,0];
-	buffer.write!short(data,0);
-	appender.put(buffer[0..short.sizeof]);
-	return appender;
-}
-auto append(Appender!(ubyte[]) appender, int data) {
-	import std.bitmanip : write;
-
-	ubyte[] buffer = [0,0,0,0,0,0,0,0];
-	buffer.write!int(data,0);
-	appender.put(buffer[0..int.sizeof]);
-	return appender;
-}
-auto append(Appender!(ubyte[]) appender, string data) {
-	assert(data.length < short.max);
-	append(appender, cast(short)data.length);
-
-
-	append(appender, cast(ubyte[])data.ptr[0..data.length]);
-	return appender;
-}
-
-auto append(Appender!(ubyte[]) appender, StringMap data) {
-	assert(data.length < short.max);
-	append(appender, cast(short)data.length);
-	foreach (k,v; data) {
-		append(appender, k);
-		append(appender, v);
-	}
-
-	return appender;
-}*/
-
-/**   [string multimap] A [short] n, followed by n pair <k><v> where <k> is a
- *                      [string] and <v> is a [string list].
- */
-alias string[][string] StringMultiMap;
-StringMultiMap readStringMultiMap(TcpConnection s, ref int counter) {
-	//writefln("got %d to read", counter);
-	StringMultiMap smm;
-	auto count = readShort(s, counter);
-	for (int i=0; i<count && counter>0; i++) {
-		auto key = readShortString(s, counter);
-		auto values = readStringList(s, counter);
-		smm[key] = values;
-	}
-	if (smm.length < count && counter <= 0)
-		throw new Exception("ran out of data to read");
-
-	return smm;
-}
+import serialize;
 
 class Connection {
 	TcpConnection sock;
@@ -777,15 +63,10 @@ class Connection {
 	/// Make a FrameHeader corresponding to this Stream
 	FrameHeader makeHeader(FrameHeader.OpCode opcode) {
 		FrameHeader fh;
-		switch (transport_version_) {
-			case 1:
-				fh.version_ = FrameHeader.Version.V1Request;
-				break;
-			case 2:
-				fh.version_ = FrameHeader.Version.V2Request;
-				break;
-			default:
-				assert(0, "invalid transport_version");
+		version (CassandraV2) {
+			fh.version_ = FrameHeader.Version.V2Request;
+		} else {
+			fh.version_ = FrameHeader.Version.V1Request;
 		}
 		if (compression_enabled_)
 			fh.compress = true;
@@ -844,36 +125,66 @@ class Connection {
 	FrameHeader authenticate(FrameHeader fh) {
 		auto authenticatorname = readAuthenticate(fh);
 		auto authenticator = GetAuthenticator(authenticatorname);
-		sendCredentials(authenticator.getCredentials());
+		version (CassandraV2) {
+			sendAuthResponse(authenticator);
+		} else {
+			sendCredentials(authenticator.getCredentials());
+		}
 		throw new Exception("NotImplementedException Authentication: "~ authenticatorname);
 	}
 
+	version (CassandraV2) {
+		/**
+		 * 4.1.2. AUTH_RESPONSE
+		 *
+		 * Answers a server authentication challenge.
+		 *
+		 * Authentication in the protocol is SASL based. The server sends authentication
+		 * challenges (a bytes token) to which the client answer with this message. Those
+		 * exchanges continue until the server accepts the authentication by sending a
+		 * AUTH_SUCCESS message after a client AUTH_RESPONSE. It is however that client that
+		 * initiate the exchange by sending an initial AUTH_RESPONSE in response to a
+		 * server AUTHENTICATE request.
+		 *
+		 * The body of this message is a single [bytes] token. The details of what this
+		 * token contains (and when it can be null/empty, if ever) depends on the actual
+		 * authenticator used.
+		 *
+		 * The response to a AUTH_RESPONSE is either a follow-up AUTH_CHALLENGE message,
+		 * an AUTH_SUCCESS message or an ERROR message.
+		 */
+		void sendAuthResponse(Authenticator a) {
+			assert(false, "todo, not implemented sendAuthResponse");
+			throw new Exception("NotImplementedException");
+		}
+	} else {
+		/**
+		 *4.1.2. CREDENTIALS
+		 *
+		 *  Provides credentials information for the purpose of identification. This
+		 *  message comes as a response to an AUTHENTICATE message from the server, but
+		 *  can be use later in the communication to change the authentication
+		 *  information.
+		 *
+		 *  The body is a list of key/value informations. It is a [short] n, followed by n
+		 *  pair of [string]. These key/value pairs are passed as is to the Cassandra
+		 *  IAuthenticator and thus the detail of which informations is needed depends on
+		 *  that authenticator.
+		 *
+		 *  The response to a CREDENTIALS is a READY message (or an ERROR message).
+		 */
+		void sendCredentials(StringMap data) {
+			auto fh = makeHeader(FrameHeader.OpCode.CREDENTIALS);
+			auto bytebuf = appender!(ubyte[])();
+			bytebuf.append(data);
+			fh.length = bytebuf.getIntLength;
+			write(sock, appender!(ubyte[])().append(fh.bytes));
+			write(sock, bytebuf);
 
-	/**
-	 *4.1.2. CREDENTIALS
-	 *
-	 *  Provides credentials information for the purpose of identification. This
-	 *  message comes as a response to an AUTHENTICATE message from the server, but
-	 *  can be use later in the communication to change the authentication
-	 *  information.
-	 *
-	 *  The body is a list of key/value informations. It is a [short] n, followed by n
-	 *  pair of [string]. These key/value pairs are passed as is to the Cassandra
-	 *  IAuthenticator and thus the detail of which informations is needed depends on
-	 *  that authenticator.
-	 *
-	 *  The response to a CREDENTIALS is a READY message (or an ERROR message).
-	 */
-	void sendCredentials(StringMap data) {
-		auto fh = makeHeader(FrameHeader.OpCode.CREDENTIALS);
-		auto bytebuf = appender!(ubyte[])();
-		bytebuf.append(data);
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		write(sock, bytebuf);
-
-		assert(false, "todo: read credentials response");
+			assert(false, "todo: read credentials response");
+		}
 	}
+
 
 	/**
 	 *4.1.3. OPTIONS
@@ -895,31 +206,123 @@ class Connection {
 	 /**
 	 *4.1.4. QUERY
 	 *
-	 *  Performs a CQL query. The body of the message consists of a CQL query as a [long
-	 *  string] followed by the [consistency] for the operation.
+	 *	V1:  Performs a CQL query. The body of the message consists of a CQL query as a [long
+	 *  	 string] followed by the [consistency] for the operation.
 	 *
+	 *  V2:	 Performs a CQL query. The body of the message must be:
+     *		 	<query><query_parameters>
+  	 *		 where <query> is a [long string] representing the query and
+  	 *		 	<query_parameters> must be
+     *			<consistency><flags>[<n><value_1>...<value_n>][<result_page_size>][<paging_state>][<serial_consistency>]
+  	 *		 where:
+     *		 	- <consistency> is the [consistency] level for the operation.
+     *		 	- <flags> is a [byte] whose bits define the options for this query and
+     * 			in particular influence what the remainder of the message contains.
+     * 			A flag is set if the bit corresponding to its `mask` is set. Supported
+	 *	        flags are, given there mask:
+	 *	        	0x01: Values. In that case, a [short] <n> followed by <n> [bytes]
+	 *	            	  values are provided. Those value are used for bound variables in
+	 *		              the query.
+	 *		        0x02: Skip_metadata. If present, the Result Set returned as a response
+	 *		              to that query (if any) will have the NO_METADATA flag (see
+	 *	    	          Section 4.2.5.2).
+	 *	        	0x03: Page_size. In that case, <result_page_size> is an [int]
+	 *	            	  controlling the desired page size of the result (in CQL3 rows).
+	 *	              	See the section on paging (Section 7) for more details.
+	 *	        	0x04: With_paging_state. If present, <paging_state> should be present.
+	 *	            	<paging_state> is a [bytes] value that should have been returned
+	 *	              	in a result set (Section 4.2.5.2). If provided, the query will be
+	 *	              	executed but starting from a given paging state. This also to
+	 *	              	continue paging on a different node from the one it has been
+	 *	              	started (See Section 7 for more details).
+	 *	        	0x05: With serial consistency. If present, <serial_consistency> should be
+	 *	            	  present. <serial_consistency> is the [consistency] level for the
+	 *	              	serial phase of conditional updates. That consitency can only be
+	 *	              	either SERIAL or LOCAL_SERIAL and if not present, it defaults to
+	 *	              	SERIAL. This option will be ignored for anything else that a
+	 *	              	conditional update/insert.
+
+	WARNING THIS PART OF THE DOCUMENTATION IS NOT ACCURATE!!! THE flag's value is actually its java enum ordinal see:
+	java.org.apache.cassandra.cql3.QueryOptions.java : Flag.deserialize and Flag.serialize
+	 */
+	private enum QueryFlag : ubyte {
+		Values 					= 0x01,
+		Skip_metadata			= 0x02,
+		Page_size				= 0x04,
+		With_paging_state		= 0x08,
+		With_serial_consistency	= 0x10
+	}
+	/**
 	 *  Note that the consistency is ignored by some queries (USE, CREATE, ALTER,
 	 *  TRUNCATE, ...).
 	 *
 	 *  The server will respond to a QUERY message with a RESULT message, the content
 	 *  of which depends on the query.
 	 */
-	Result query(string q, Consistency consistency) {
-		auto fh = makeHeader(FrameHeader.OpCode.QUERY);
-		auto bytebuf = appender!(ubyte[])();
-		writeln("-----------");
-		bytebuf.appendLongString(q);
-		//print(bytebuf.data);
-		writeln("-----------");
-		bytebuf.append(consistency);
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		write(sock, bytebuf);
+	version (CassandraV2) {
+		auto appendQueryParameters(Args...)(ref Appender!(ubyte[]) bytebuf, Consistency consistency, ubyte flags, int page_size, byte[] paging_state, Consistency serial_consistency, Args args) {
+			bytebuf.append(consistency);
+			bytebuf.append(flags);
+			if ((flags & QueryFlag.Values) == QueryFlag.Values) {
+				assert(args.length < short.max);
+				bytebuf.append(cast(short)args.length);
+				foreach (arg; args) {
+					bytebuf.appendIntBytes(arg);
+				}
+			}
+			if ((flags & QueryFlag.Page_size) == QueryFlag.Page_size) {
+				bytebuf.append(page_size);
+			}
+			if ((flags & QueryFlag.With_paging_state) == QueryFlag.With_paging_state) {
+				bytebuf.appendIntBytes(paging_state);
+			}
+			if ((flags & QueryFlag.With_serial_consistency) == QueryFlag.With_serial_consistency) {
+				bytebuf.append(serial_consistency);
+			}
+			return bytebuf;
+		}
+		Result query(Args...)(string q, Consistency consistency) {
+			return query(q, consistency, 0x00, -1, null, Consistency.SERIAL);
+		}
+		Result query(Args...)(string q, Consistency consistency, ubyte flags, int page_size, byte[] paging_state, Consistency serial_consistency, Args args) {
+			assert(serial_consistency == Consistency.SERIAL || serial_consistency == Consistency.LOCAL_SERIAL);
 
-		fh = readFrameHeader(sock, counter);
-		throwOnError(fh);
-		return new Result(fh);
+			auto fh = makeHeader(FrameHeader.OpCode.QUERY);
+			auto bytebuf = appender!(ubyte[])();
+			writeln("-----------");
+			bytebuf.appendLongString(q);
+			//print(bytebuf.data);
+			writeln("-----------");
+			bytebuf = appendQueryParameters(bytebuf, consistency, flags, page_size, paging_state, serial_consistency, args);
+
+			fh.length = bytebuf.getIntLength;
+			write(sock, appender!(ubyte[])().append(fh.bytes));
+			write(sock, bytebuf);
+
+			fh = readFrameHeader(sock, counter);
+			throwOnError(fh);
+			return new Result(fh);
+		}
+	} else {
+		Result query(string q, Consistency consistency) {
+			auto fh = makeHeader(FrameHeader.OpCode.QUERY);
+			auto bytebuf = appender!(ubyte[])();
+			writeln("-----------");
+			bytebuf.appendLongString(q);
+			//print(bytebuf.data);
+			writeln("-----------");
+			bytebuf.append(consistency);
+			fh.length = bytebuf.getIntLength;
+			write(sock, appender!(ubyte[])().append(fh.bytes));
+			write(sock, bytebuf);
+
+			fh = readFrameHeader(sock, counter);
+			throwOnError(fh);
+			return new Result(fh);
+		}
 	}
+
+
 	bool insert(string q, Consistency consistency = Consistency.ANY) {
 		assert(q[0.."insert".length]=="INSERT");
 		auto res = query(q, consistency);
@@ -967,44 +370,111 @@ class Connection {
 	 *4.1.6. EXECUTE
 	 *
 	 *  Executes a prepared query. The body of the message must be:
-	 *    <id><n><value_1>....<value_n><consistency>
-	 *  where:
-	 *    - <id> is the prepared query ID. It's the [short bytes] returned as a
-	 *      response to a PREPARE message.
-	 *    - <n> is a [short] indicating the number of following values.
-	 *    - <value_1>...<value_n> are the [bytes] to use for bound variables in the
-	 *      prepared query.
-	 *    - <consistency> is the [consistency] level for the operation.
+	 *  V1:   <id><n><value_1>....<value_n><consistency>
+	 *  		where:
+	 *  		  - <id> is the prepared query ID. It's the [short bytes] returned as a
+	 *  		    response to a PREPARE message.
+	 *  		  - <n> is a [short] indicating the number of following values.
+	 *  		  - <value_1>...<value_n> are the [bytes] to use for bound variables in the
+	 *  		    prepared query.
+	 *  		  - <consistency> is the [consistency] level for the operation.
 	 *
-	 *  Note that the consistency is ignored by some (prepared) queries (USE, CREATE,
-	 *  ALTER, TRUNCATE, ...).
+	 *  	Note that the consistency is ignored by some (prepared) queries (USE, CREATE,
+	 *  	ALTER, TRUNCATE, ...).
+	 *
+	 *  V2:   <id><query_parameters>
+	 *			where <id> is the prepared query ID. It's the [short bytes] returned as a
+	 *			response to a PREPARE message. As for <query_parameters>, it has the exact
+	 *			same definition than in QUERY (see Section 4.1.4).
+	 *
 	 *
 	 *  The response from the server will be a RESULT message.
 	 */
-	private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, Args args) {
-		auto fh = makeHeader(FrameHeader.OpCode.EXECUTE);
-		auto bytebuf = appender!(ubyte[])();
-		writeln("-----=----=-");
-		bytebuf.appendShortBytes(preparedStatementID);
-		assert(args.length < short.max);
-		bytebuf.append(cast(short)args.length);
-		foreach (arg; args) {
-			bytebuf.appendIntBytes(arg);
-		}
-		bytebuf.append(consistency);
+	version (CassandraV2) {
+		private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, ubyte flags, int page_size, byte[] paging_state, Consistency serial_consistency, Args args) {
+			auto fh = makeHeader(FrameHeader.OpCode.EXECUTE);
+			auto bytebuf = appender!(ubyte[])();
+			writeln("-----=----=-");
+			bytebuf.appendShortBytes(preparedStatementID);
 
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		writeln("Sending: ", bytebuf.data);
-		write(sock, bytebuf);
-		writeln("-----=----=-");
+			bytebuf = appendQueryParameters(bytebuf, consistency, flags, page_size, paging_state, serial_consistency, args);
 
-		fh = readFrameHeader(sock, counter);
-		throwOnError(fh);
-		if (!fh.isRESULT) {
-			throw new Exception("CQLProtocolException, Unknown response to Execute command: "~ to!string(fh.opcode));
+			fh.length = bytebuf.getIntLength;
+			write(sock, appender!(ubyte[])().append(fh.bytes));
+			writeln("Sending: ", bytebuf.data);
+			write(sock, bytebuf);
+			writeln("-----=----=-");
+
+			fh = readFrameHeader(sock, counter);
+			throwOnError(fh);
+			if (!fh.isRESULT) {
+				throw new Exception("CQLProtocolException, Unknown response to Execute command: "~ to!string(fh.opcode));
+			}
+			return new Result(fh);
 		}
-		return new Result(fh);
+	} else {
+		private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, Args args) {
+			auto fh = makeHeader(FrameHeader.OpCode.EXECUTE);
+			auto bytebuf = appender!(ubyte[])();
+			writeln("-----=----=-");
+			bytebuf.appendShortBytes(preparedStatementID);
+			assert(args.length < short.max);
+			bytebuf.append(cast(short)args.length);
+			foreach (arg; args) {
+				bytebuf.appendIntBytes(arg);
+			}
+			bytebuf.append(consistency);
+
+			fh.length = bytebuf.getIntLength;
+			write(sock, appender!(ubyte[])().append(fh.bytes));
+			writeln("Sending: ", bytebuf.data);
+			write(sock, bytebuf);
+			writeln("-----=----=-");
+
+			fh = readFrameHeader(sock, counter);
+			throwOnError(fh);
+			if (!fh.isRESULT) {
+				throw new Exception("CQLProtocolException, Unknown response to Execute command: "~ to!string(fh.opcode));
+			}
+			return new Result(fh);
+		}
+	}
+
+	version (CassandraV2) {
+		/**
+		 * 4.1.7. BATCH
+		 *	  Allows executing a list of queries (prepared or not) as a batch (note that
+		 *	  only DML statements are accepted in a batch). The body of the message must
+		 *	  be:
+		 *	    <type><n><query_1>...<query_n><consistency>
+		 *	  where:
+		 *	    - <type> is a [byte] indicating the type of batch to use:
+		 *	        - If <type> == 0, the batch will be "logged". This is equivalent to a
+		 *	          normal CQL3 batch statement.
+		 *	        - If <type> == 1, the batch will be "unlogged".
+		 *	        - If <type> == 2, the batch will be a "counter" batch (and non-counter
+		 *	          statements will be rejected).
+		 *	    - <n> is a [short] indicating the number of following queries.
+		 *	    - <query_1>...<query_n> are the queries to execute. A <query_i> must be of the
+		 *	      form:
+		 *	        <kind><string_or_id><n><value_1>...<value_n>
+		 *	      where:
+		 *	       - <kind> is a [byte] indicating whether the following query is a prepared
+		 *	         one or not. <kind> value must be either 0 or 1.
+		 *	       - <string_or_id> depends on the value of <kind>. If <kind> == 0, it should be
+		 *	         a [long string] query string (as in QUERY, the query string might contain
+		 *	         bind markers). Otherwise (that is, if <kind> == 1), it should be a
+		 *	         [short bytes] representing a prepared query ID.
+		 *	       - <n> is a [short] indicating the number (possibly 0) of following values.
+		 *	       - <value_1>...<value_n> are the [bytes] to use for bound variables.
+		 *	    - <consistency> is the [consistency] level for the operation.
+		 *
+		 *	  The server will respond with a RESULT message with a `Void` kind (0x0001,
+		 *	  see Section 4.2.5).
+		 */
+		 Result batch() {
+		 	throw new NotImplementedException("BATCH not implemented");
+		 }
 	}
 
 	/**
@@ -1125,9 +595,22 @@ class Connection {
 	 *
 	 *4.2.3. AUTHENTICATE
 	 *
-	 *  Indicates that the server require authentication. This will be sent following
-	 *  a STARTUP message and must be answered by a CREDENTIALS message from the
-	 *  client to provide authentication informations.
+	 *  V1: Indicates that the server require authentication. This will be sent following
+	 *  	a STARTUP message and must be answered by a CREDENTIALS message from the
+	 *  	client to provide authentication informations.
+	 *  V2: Indicates that the server require authentication, and which authentication
+	 *		mechanism to use.
+	 *
+	 *		The authentication is SASL based and thus consists on a number of server
+	 *		challenges (AUTH_CHALLENGE, Section 4.2.7) followed by client responses
+	 *		(AUTH_RESPONSE, Section 4.1.2). The Initial exchange is however boostrapped
+	 *		by an initial client response. The details of that exchange (including how
+	 *		much challenge-response pair are required) are specific to the authenticator
+	 *		in use. The exchange ends when the server sends an AUTH_SUCCESS message or
+	 *		an ERROR message.
+	 *
+	 *		This message will be sent following a STARTUP message if authentication is
+	 *		required and must be answered by a AUTH_RESPONSE message from the client.
 	 *
 	 *  The body consists of a single [string] indicating the full class name of the
 	 *  IAuthenticator in use.
@@ -1153,11 +636,13 @@ class Connection {
 	/**
 	 *4.2.5. RESULT
 	 *
-	 *  The result to a query (QUERY, PREPARE or EXECUTE messages).
+	 *  V1: The result to a query (QUERY, PREPARE or EXECUTE messages).
 	 *
-	 *  The first element of the body of a RESULT message is an [int] representing the
+	 *  V2: The result to a query (QUERY, PREPARE, EXECUTE or BATCH messages).
+	 *
+	 * The first element of the body of a RESULT message is an [int] representing the
 	 *  `kind` of result. The rest of the body depends on the kind. The kind can be
-	 *  one of:
+	 * one of:
 	 *    0x0001    Void: for results carrying no information.
 	 *    0x0002    Rows: for results to select queries, returning a set of rows.
 	 *    0x0003    Set_keyspace: the result to a `use` query.
@@ -1227,7 +712,8 @@ class Connection {
 
 		/**  where:
 		 *    - <metadata> is composed of:
-		 *        <flags><columns_count><global_table_spec>?<col_spec_1>...<col_spec_n>
+		 *      V1:  <flags><columns_count><global_table_spec>?<col_spec_1>...<col_spec_n>
+		 *		V2:  <flags><columns_count>[<paging_state>][<global_table_spec>?<col_spec_1>...<col_spec_n>]
 		 *      where:
 		 *        - <flags> is an [int]. The bits of <flags> provides information on the
 		 *          formatting of the remaining informations. A flag is set if the bit
@@ -1236,6 +722,19 @@ class Connection {
 		 *            0x0001    Global_tables_spec: if set, only one table spec (keyspace
 		 *                      and table name) is provided as <global_table_spec>. If not
 		 *                      set, <global_table_spec> is not present.
+		 *			V2:
+		 *				0x0002    Has_more_pages: indicates whether this is not the last
+		 *				          page of results and more should be retrieve. If set, the
+		 *				          <paging_state> will be present. The <paging_state> is a
+		 *				          [bytes] value that should be used in QUERY/EXECUTE to
+		 *				          continue paging and retrieve the remained of the result for
+		 *				          this query (See Section 7 for more details).
+		 *				0x0003    No_metadata: if set, the <metadata> is only composed of
+		 *				          these <flags>, the <column_count> and optionally the
+		 *				          <paging_state> (depending on the Has_more_pages flage) but
+		 *				          no other information (so no <global_table_spec> nor <col_spec_i>).
+		 *				          This will only ever be the case if this was requested
+		 *				          during the query (see QUERY and RESULT messages).
 		 *        - <columns_count> is an [int] representing the number of columns selected
 		 *          by the query this result is of. It defines the number of <col_spec_i>
 		 *          elements in and the number of element for each row in <rows_content>.
@@ -1244,8 +743,15 @@ class Connection {
 		 *          (unique) keyspace name and table name the columns return are of.
 		 */
 		struct MetaData {
-			int flags; enum GLOBAL_TABLES_SPEC = 0x0001; @property bool hasGlobalTablesSpec() { return flags & MetaData.GLOBAL_TABLES_SPEC ? true : false; }
+			int flags;
+			enum {
+				GLOBAL_TABLES_SPEC = 0x0001,
+				Has_more_pages = 0x0002,
+				No_metadata = 0x0004
+			}
+			@property bool hasGlobalTablesSpec() { return flags & MetaData.GLOBAL_TABLES_SPEC ? true : false; }
 			int columns_count;
+			ubyte[] paging_state;
 			string[2] global_table_spec;
 			ColumnSpecification[] column_specs;
 		}
@@ -1253,12 +759,17 @@ class Connection {
 			auto md = MetaData();
 			md.flags.readIntNotNULL(sock, counter);
 			md.columns_count.readIntNotNULL(sock, counter);
-			if (md.flags & MetaData.GLOBAL_TABLES_SPEC) {
-				md.global_table_spec[0] = readShortString(sock, counter);
-				md.global_table_spec[1] = readShortString(sock, counter);
+			if ((md.flags & MetaData.Has_more_pages) == MetaData.Has_more_pages) {
+				md.paging_state = readIntBytes(sock, counter);
 			}
-			md.column_specs = readColumnSpecifications(md.flags & MetaData.GLOBAL_TABLES_SPEC, md.columns_count);
-			writeln("got spec: ", md);
+			if ((md.flags & MetaData.No_metadata) != MetaData.No_metadata) {
+				if (md.flags & MetaData.GLOBAL_TABLES_SPEC) {
+					md.global_table_spec[0] = readShortString(sock, counter);
+					md.global_table_spec[1] = readShortString(sock, counter);
+				}
+				md.column_specs = readColumnSpecifications(md.flags & MetaData.GLOBAL_TABLES_SPEC, md.columns_count);
+			}
+			writeln("got MetaData: ", md);
 			return md;
 		}
 
@@ -1282,7 +793,7 @@ class Connection {
 		 *            0x0007    Double
 		 *            0x0008    Float
 		 *            0x0009    Int
-		 *            0x000A    Text
+		 *            0x000A    Text // Gone in V2
 		 *            0x000B    Timestamp
 		 *            0x000C    Uuid
 		 *            0x000D    Varchar
@@ -1321,8 +832,10 @@ class Connection {
 					break;
 				case Option.Type.Int:
 					break;
+				version (CassandraV2) {} else {
 				case Option.Type.Text:
 					break;
+				}
 				case Option.Type.Timestamp:
 					break;
 				case Option.Type.Uuid:
@@ -1436,8 +949,10 @@ class Connection {
 						goto case;
 					case Option.Type.Int:
 						goto case;
+					version (CassandraV2) {} else {
 					case Option.Type.Text:
 						goto case;
+					}
 					case Option.Type.Timestamp:
 						goto case;
 					case Option.Type.Uuid:
@@ -1477,10 +992,26 @@ class Connection {
 		 *4.2.5.4. Prepared
 		 *
 		 *  The result to a PREPARE message. The rest of the body of a Prepared result is:
-		 *    <id><metadata>
-		 *  where:
+		 *    V1: <id><metadata>
+		 *	  V2: <id><metadata><result_metadata>
+		 *  V1: where:
 		 *    - <id> is [short bytes] representing the prepared query ID.
 		 *    - <metadata> is defined exactly as for a Rows RESULT (See section 4.2.5.2).
+		 *  V2: where:
+		 *    - <id> is [short bytes] representing the prepared query ID.
+		 *    - <metadata> is defined exactly as for a Rows RESULT (See section 4.2.5.2; you
+		 *    	can however assume that the Has_more_pages flag is always off) and
+		 *    	is the specification for the variable bound in this prepare statement.
+		 *    - <result_metadata> is defined exactly as <metadata> but correspond to the
+		 *    	metadata for the resultSet that execute this query will yield. Note that
+		 *    	<result_metadata> may be empty (have the No_metadata flag and 0 columns, See
+		 *    	section 4.2.5.2) and will be for any query that is not a Select. There is
+		 *    	in fact never a guarantee that this will non-empty so client should protect
+		 *    	themselves accordingly. The presence of this information is an
+		 *    	optimization that allows to later execute the statement that has been
+		 *    	prepared without requesting the metadata (Skip_metadata flag in EXECUTE).
+		 *    	Clients can safely discard this metadata if they do not want to take
+		 *    	advantage of that optimization.
 		 *
 		 *  Note that prepared query ID return is global to the node on which the query
 		 *  has been prepared. It can be used on any connection to that node and this
@@ -1527,6 +1058,12 @@ class Connection {
 	class PreparedStatement : Result {
 		ubyte[] id;
 		Consistency consistency = Consistency.ANY;
+		ubyte flags;
+		int page_size = -1;
+		byte[] paging_state;
+		Consistency serial_consistency = Consistency.SERIAL;
+
+		MetaData result_metadata;
 
 		this(FrameHeader fh) {
 			super(fh);
@@ -1540,10 +1077,17 @@ class Connection {
 			assert(kind_ is Kind.Prepared);
 			id = readShortBytes(sock, counter);
 			metadata = readRowMetaData(fh);
+			version (CassandraV2) {
+				result_metadata = readRowMetaData(fh);
+			}
 		}
 
 		Result execute(Args...)(Args args) {
-			return Connection.execute(id, consistency, args);
+			version (CassandraV2) {
+						return Connection.execute(id, consistency, flags, page_size, paging_state, serial_consistency, args);
+			} else {
+						return Connection.execute(id, consistency, args);
+			}
 		}
 
 		override
@@ -1600,6 +1144,37 @@ class Connection {
 		appender.append(e);
 	}*/
 
+	/** 4.2.7. AUTH_CHALLENGE
+	 *
+	 *   A server authentication challenge (see AUTH_RESPONSE (Section 4.1.2) for more
+	 *   details).
+	 *
+	 *   The body of this message is a single [bytes] token. The details of what this
+	 *   token contains (and when it can be null/empty, if ever) depends on the actual
+	 *   authenticator used.
+	 *
+	 *   Clients are expected to answer the server challenge by an AUTH_RESPONSE
+	 *   message.
+	 */
+	ubyte[] readAuthChallenge() {
+		return readIntBytes(sock, counter);
+	}
+
+	/** 4.2.7. AUTH_SUCCESS
+	 *
+	 *   Indicate the success of the authentication phase. See Section 4.2.3 for more
+	 *   details.
+	 *
+	 *   The body of this message is a single [bytes] token holding final information
+	 *   from the server that the client may require to finish the authentication
+	 *   process. What that token contains and whether it can be null depends on the
+	 *   actual authenticator used.
+	 */
+	ubyte[] readAuthSuccess() {
+		return readIntBytes(sock, counter);
+	}
+
+
 
 	/**5. Compression
 	 *
@@ -1614,6 +1189,14 @@ class Connection {
 	 *  been agreed upon (a server may only compress frame above a certain size at its
 	 *  discretion). A frame body should be compressed if and only if the compressed
 	 *  flag (see Section 2.2) is set.
+	 *
+	 * V2:	As of this version 2 of the protocol, the following compressions are available:
+	 *		    - lz4 (https://code.google.com/p/lz4/). In that, note that the 4 first bytes
+	 *		      of the body will be the uncompressed length (followed by the compressed
+	 *		      bytes).
+	 *		    - snappy (https://code.google.com/p/snappy/). This compression might not be
+	 *		      available as it depends on a native lib (server-side) that might not be
+	 *		      avaivable on some installation.
 	 */
 
 	/**
@@ -1665,6 +1248,43 @@ class Connection {
 		}
 		return ret;
 	}
+
+	/**
+	 * 7. Result paging
+	 *
+	 *   The protocol allows for paging the result of queries. For that, the QUERY and
+	 *   EXECUTE messages have a <result_page_size> value that indicate the desired
+	 *   page size in CQL3 rows.
+	 *
+	 *   If a positive value is provided for <result_page_size>, the result set of the
+	 *   RESULT message returned for the query will contain at most the
+	 *   <result_page_size> first rows of the query result. If that first page of result
+	 *   contains the full result set for the query, the RESULT message (of kind `Rows`)
+	 *   will have the Has_more_pages flag *not* set. However, if some results are not
+	 *   part of the first response, the Has_more_pages flag will be set and the result
+	 *   will contain a <paging_state> value. In that case, the <paging_state> value
+	 *   should be used in a QUERY or EXECUTE message (that has the *same* query than
+	 *   the original one or the behavior is undefined) to retrieve the next page of
+	 *   results.
+	 *
+	 *   Only CQL3 queries that return a result set (RESULT message with a Rows `kind`)
+	 *   support paging. For other type of queries, the <result_page_size> value is
+	 *   ignored.
+	 *
+	 *   Note to client implementors:
+	 *   - While <result_page_size> can be as low as 1, it will likely be detrimental
+	 *     to performance to pick a value too low. A value below 100 is probably too
+	 *     low for most use cases.
+	 *   - Clients should not rely on the actual size of the result set returned to
+	 *     decide if there is more result to fetch or not. Instead, they should always
+	 *     check the Has_more_pages flag (unless they did not enabled paging for the query
+	 *     obviously). Clients should also not assert that no result will have more than
+	 *     <result_page_size> results. While the current implementation always respect
+	 *     the exact value of <result_page_size>, we reserve ourselves the right to return
+	 *     slightly smaller or bigger pages in the future for performance reasons.
+	 */
+
+
 
 	/**
 	 *7. Error codes
@@ -1829,6 +1449,33 @@ class Connection {
 		}
 	 }
 }
+
+/** 9. Changes from v1
+ *  * Protocol is versioned to allow old client connects to a newer server, if a
+ *    newer client connects to an older server, it needs to check if it gets a
+ *    ProtocolException on connection and try connecting with a lower version.
+ *  * A query can now have bind variables even though the statement is not
+ *    prepared; see Section 4.1.4.
+ *  * A new BATCH message allows to batch a set of queries (prepared or not); see 
+ *    Section 4.1.7.
+ *  * Authentication now uses SASL. Concretely, the CREDENTIALS message has been
+ *    removed and replaced by a server/client challenges/responses exchanges (done
+ *    through the new AUTH_RESPONSE/AUTH_CHALLENGE messages). See Section 4.2.3 for
+ *    details.
+ *  * Query paging has been added (Section 7): QUERY and EXECUTE message have an
+ *    additional <result_page_size> [int] and <paging_state> [bytes], and
+ *    the Rows kind of RESULT message has an additional flag and <paging_state> 
+ *    value. Note that paging is optional, and a client that do not want to handle
+ *    can simply avoid including the Page_size flag and parameter in QUERY and
+ *    EXECUTE.
+ *  * QUERY and EXECUTE statements can request for the metadata to be skipped in
+ *    the result set returned (for efficiency reasons) if said metadata are known
+ *    in advance. Furthermore, the result to a PREPARE (section 4.2.5.4) now
+ *    includes the metadata for the result of executing the statement just
+ *    prepared (though those metadata will be empty for non SELECT statements).
+ *
+ * ==============================END SPEC============================
+ */
 
 class Authenticator {
 	StringMap getCredentials() {
