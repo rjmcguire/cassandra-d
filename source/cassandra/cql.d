@@ -152,11 +152,11 @@ struct FrameHeader {
 	 *  The rest of the flags is currently unused and ignored.
 	 */
 	mixin(bitfields!(
-		bool,"compressed", 1,
+		bool,"compress", 1,
 		bool,"trace", 1,
 		uint, "", 6
 		));
-
+	bool hasTracing() { if (this.trace) return true; return false; }
 
 	/**2.3. stream
 	 *
@@ -182,7 +182,7 @@ struct FrameHeader {
 	 *  the 128 maximum possible stream ids if it is simpler for those
 	 *  implementation.
 	 */
-	byte streamid; bool isServerStreamID() { if (streamid < 0) return true; return false; } bool isEvent() { if (streamid==-1) return true; return false;}
+	byte streamid; bool isServerStream() { if (streamid < 0) return true; return false; } bool isEvent() { if (streamid==-1) return true; return false;}
 
 	/**2.4. opcode
 	 *
@@ -267,6 +267,7 @@ int getIntLength(Appender!(ubyte[]) appender) {
 FrameHeader readFrameHeader(TcpConnection s, ref int counter) {
 	assert(counter == 0, to!string(counter) ~" bytes unread from last Frame");
 	counter = int.max;
+	writefln("===================read frame header========================");
 	auto fh = FrameHeader();
 	fh.version_ = cast(FrameHeader.Version)readByte(s, counter);
 	readByte(s, counter); // FIXME: this should load into flags
@@ -275,6 +276,7 @@ FrameHeader readFrameHeader(TcpConnection s, ref int counter) {
 	readIntNotNULL(fh.length, s, counter);
 
 	counter = fh.length;
+	writefln("=================== end read frame header===================");
 	//writefln("go %d data to play", counter);
 
 	return fh;
@@ -561,6 +563,7 @@ struct Option {
 
 }
 
+
 /**    [option list]  A [short] n, followed by n [option].
  *    [inet]         An address (ip and port) to a node. It consists of one
  *                   [byte] n, that represents the address size, followed by n
@@ -739,8 +742,11 @@ class Connection {
 
 	enum defaultport = 9042;
 	void connect(string host, short port = defaultport) {
+		writeln("connecting");
 		sock = connectTcp(host, port);
+		writeln("connected. doing handshake...");
 		startup();
+		writeln("handshake completed.");
 	}
 
 	void close() {
@@ -782,7 +788,7 @@ class Connection {
 				assert(0, "invalid transport_version");
 		}
 		if (compression_enabled_)
-			fh.compressed = true;
+			fh.compress = true;
 		if (tracing_enabled_)
 			fh.trace = true;
 		fh.streamid = streamid_;
@@ -923,7 +929,8 @@ class Connection {
 		throw new Exception("CQLProtocolException: expected void response to insert");
 	}
 	Result select(string q, Consistency consistency = Consistency.QUORUM) {
-		assert(q[0.."select".length]=="SELECT");
+		import std.string : icmp;
+		assert(icmp(q[0.."select".length], "SELECT")==0);
 		return query(q, consistency);
 	}
 
@@ -1237,7 +1244,7 @@ class Connection {
 		 *          (unique) keyspace name and table name the columns return are of.
 		 */
 		struct MetaData {
-			int flags; enum GLOBAL_TABLES_SPEC = 0x0001;
+			int flags; enum GLOBAL_TABLES_SPEC = 0x0001; @property bool hasGlobalTablesSpec() { return flags & MetaData.GLOBAL_TABLES_SPEC ? true : false; }
 			int columns_count;
 			string[2] global_table_spec;
 			ColumnSpecification[] column_specs;
@@ -1346,7 +1353,7 @@ class Connection {
 			string ksname;
 			string tablename;
 
-			string column_name;
+			string name;
 			Option type;
 		}
 		auto readColumnSpecification(bool hasGlobalTablesSpec) {
@@ -1355,7 +1362,7 @@ class Connection {
 				ret.ksname = readShortString(sock, counter);
 				ret.tablename = readShortString(sock, counter);
 			}
-			ret.column_name = readShortString(sock, counter);
+			ret.name = readShortString(sock, counter);
 			ret.type = *readOption(sock, counter);
 			return ret;
 		}
@@ -1391,7 +1398,7 @@ class Connection {
 				//log("reading index[%d], %s", i, md.column_specs[i]);
 				final switch (md.column_specs[i].type.id) {
 					case Option.Type.Custom:
-						log("warning column %s has custom type", md.column_specs[i].column_name);
+						log("warning column %s has custom type", md.column_specs[i].name);
 						ret ~= readIntBytes(sock, counter);
 						break;
 					case Option.Type.Counter:
@@ -1856,6 +1863,37 @@ class NotImplementedException : CQLException {
 }
 
 
+string bestCassandraType(T)() {
+	import std.datetime;
+
+	static if (is(T == bool)) {
+		return "boolean";
+	} else static if (is(T == int)) {
+		return "int";
+	} else static if (is (T == long)) {
+		return "bigint";
+	} else static if (is (T == float)) {
+		return "float";
+	} else static if (is (T == double)) {
+		return "double";
+	} else static if (is (T == string)) {
+		return "text";
+	} else static if (is (T == ubyte[])) {
+		return "blob";
+	} else static if (is (T == InetAddress)) {
+		return "inet";
+	} else static if (is (T == InetAddress6)) {
+		return "inet";
+	} else static if (is (T == DateTime)) {
+		return "timestamp";
+	} else {
+		assert(0, "Can't suggest a cassandra cql type for storing: "~T.stringof);
+	}
+
+}
+
+
+
 
 unittest {
 	auto cassandra = new Connection();
@@ -1871,13 +1909,14 @@ unittest {
 		writefln("USE twissandra");
 		auto res = cassandra.query(`USE twissandra`, Consistency.ANY);
 		writefln("using %s %s", res.kind_, res.keyspace);
-	} catch (Exception e) {writefln(e.msg);}
+	} catch (Exception e) {
 
-	try {
-		writefln("CREATE KEYSPACE twissandra");
-		auto res = cassandra.query(`CREATE KEYSPACE twissandra WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, Consistency.ANY);
-		writefln("created %s %s %s", res.kind_, res.keyspace, res.lastchange);
-	} catch (Exception e) {writefln(e.msg);}
+		try {
+			writefln("CREATE KEYSPACE twissandra");
+			auto res = cassandra.query(`CREATE KEYSPACE twissandra WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, Consistency.ANY);
+			writefln("created %s %s %s", res.kind_, res.keyspace, res.lastchange);
+		} catch (Exception e) {writefln(e.msg);}
+	}
 
 
 	try {

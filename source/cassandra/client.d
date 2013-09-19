@@ -1,7 +1,7 @@
 module cassandra.client;
 
 import cassandra.cql;
-import cassandra.db;
+import cassandra.schema;
 
 import vibe.core.connectionpool : ConnectionPool;
 
@@ -17,12 +17,15 @@ class CassandraClient {
 			return ret;
 			});
 	}
-	CassandraDatabase getSchema(string schema) {
-		return CassandraDatabase(this, schema);
+	CassandraSchema getSchema(string schema) {
+		return CassandraSchema(this, schema);
 	}
 	/+CassandraTable getTable(string table) {
 		return CassandraTable(this, table);
 	}+/
+	Connection getConnection() {
+		return lockConnection();
+	}
 
 
 	package auto lockConnection() { return m_connections.lockConnection(); }
