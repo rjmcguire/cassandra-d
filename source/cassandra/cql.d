@@ -734,17 +734,28 @@ private StringMultiMap readStringMultiMap(TCPConnection s, ref int counter) {
 class Connection {
 	private {
 		TCPConnection sock;
+		string m_host;
+		ushort m_port;
 		string m_usedKeyspace;
 	}
 
-	enum defaultport = 9042;
-	void connect(string host, short port = defaultport) {
-		writeln("connecting");
-		sock = connectTCP(host, port);
-		writeln("connected. doing handshake...");
-		startup();
-		writeln("handshake completed.");
-		m_usedKeyspace = null;
+	enum defaultPort = 9042;
+
+	this(string host, ushort port = defaultPort)
+	{
+		m_host = host;
+		m_port = port;
+	}
+
+	void connect() {
+		if (!sock || !sock.connected) {
+			writeln("connecting");
+			sock = connectTCP(m_host, m_port);
+			writeln("connected. doing handshake...");
+			startup();
+			writeln("handshake completed.");
+			m_usedKeyspace = null;
+		}
 	}
 
 	void close() {
@@ -754,6 +765,7 @@ class Connection {
 		}
 		assert(counter == 0, "Did not complete reading of stream: "~ to!string(counter) ~" bytes left");
 		sock.close();
+		sock = null;
 	}
 
 	void useKeyspace(string name)
@@ -828,7 +840,7 @@ class Connection {
 	 *    - "COMPRESSION": the compression algorithm to use for frames (See section 5).
 	 *      This is optional, if not specified no compression will be used.
 	 */
-	 void startup(string compression_algorithm = "") {
+	 private void startup(string compression_algorithm = "") {
 		StringMap data;
 		data["CQL_VERSION"] = "3.0.0";
 		if (compression_algorithm.length > 0)
@@ -848,7 +860,8 @@ class Connection {
 		}
 		throwOnError(fh);
 	}
-	FrameHeader authenticate(FrameHeader fh) {
+
+	private FrameHeader authenticate(FrameHeader fh) {
 		auto authenticatorname = readAuthenticate(fh);
 		auto authenticator = GetAuthenticator(authenticatorname);
 		sendCredentials(authenticator.getCredentials());
@@ -871,7 +884,7 @@ class Connection {
 	 *
 	 *  The response to a CREDENTIALS is a READY message (or an ERROR message).
 	 */
-	void sendCredentials(StringMap data) {
+	private void sendCredentials(StringMap data) {
 		auto fh = makeHeader(FrameHeader.OpCode.CREDENTIALS);
 		auto bytebuf = appender!(ubyte[])();
 		bytebuf.append(data);
@@ -890,6 +903,7 @@ class Connection {
 	 *  message.
 	 */
 	StringMultiMap requestOptions() {
+		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.OPTIONS);
 		write(sock, appender!(ubyte[])().append(fh.bytes));
 		fh = readFrameHeader(sock, counter);
@@ -912,6 +926,7 @@ class Connection {
 	 *  of which depends on the query.
 	 */
 	Result query(string q, Consistency consistency) {
+		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.QUERY);
 		auto bytebuf = appender!(ubyte[])();
 		writeln("-----------");
@@ -928,6 +943,7 @@ class Connection {
 		return new Result(fh);
 	}
 	bool insert(string q, Consistency consistency = Consistency.ANY) {
+		connect();
 		assert(q[0.."insert".length]=="INSERT");
 		auto res = query(q, consistency);
 		if (res.kind == Result.Kind.Void) {
@@ -936,6 +952,7 @@ class Connection {
 		throw new Exception("CQLProtocolException: expected void response to insert");
 	}
 	Result select(string q, Consistency consistency = Consistency.QUORUM) {
+		connect();
 		import std.string : icmp;
 		assert(icmp(q[0.."select".length], "SELECT")==0);
 		return query(q, consistency);
@@ -951,6 +968,7 @@ class Connection {
 	 *  see Section 4.2.5).
 	 */
 	PreparedStatement prepare(string q) {
+		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.PREPARE);
 		auto bytebuf = appender!(ubyte[])();
 		writeln("---------=-");
@@ -989,6 +1007,7 @@ class Connection {
 	 *  The response from the server will be a RESULT message.
 	 */
 	private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, Args args) {
+		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.EXECUTE);
 		auto bytebuf = appender!(ubyte[])();
 		writeln("-----=----=-");
@@ -1030,6 +1049,7 @@ class Connection {
 	 *  multiple times the same event messages, wasting bandwidth.
 	 */
 	void listen(Event events...) {
+		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.REGISTER);
 		auto bytebuf = appender!(ubyte[])();
 		auto tmpbuf = appender!(ubyte[])();
@@ -1061,7 +1081,7 @@ class Connection {
 	 *  the exception, more content may follow. The error codes are defined in
 	 *  Section 7, along with their additional content if any.
 	 */
-	void throwOnError(FrameHeader fh) {
+	protected void throwOnError(FrameHeader fh) {
 		if (!fh.isERROR) return;
 		int tmp;
 		Error code;
@@ -1139,7 +1159,7 @@ class Connection {
 	 *  The body consists of a single [string] indicating the full class name of the
 	 *  IAuthenticator in use.
 	 */
-	string readAuthenticate(FrameHeader fh) {
+	protected string readAuthenticate(FrameHeader fh) {
 		assert(fh.isAUTHENTICATE);
 		return readShortString(sock, counter);
 	}
@@ -1153,7 +1173,7 @@ class Connection {
 	 *  The body of a SUPPORTED message is a [string multimap]. This multimap gives
 	 *  for each of the supported STARTUP options, the list of supported values.
 	 */
-	StringMultiMap readSupported(FrameHeader fh) {
+	protected StringMultiMap readSupported(FrameHeader fh) {
 		return readStringMultiMap(sock, counter);
 	}
 
@@ -1363,7 +1383,7 @@ class Connection {
 			string name;
 			Option type;
 		}
-		auto readColumnSpecification(bool hasGlobalTablesSpec) {
+		protected auto readColumnSpecification(bool hasGlobalTablesSpec) {
 			ColumnSpecification ret;
 			if (!hasGlobalTablesSpec) {
 				ret.ksname = readShortString(sock, counter);
@@ -1373,7 +1393,7 @@ class Connection {
 			ret.type = *readOption(sock, counter);
 			return ret;
 		}
-		auto readColumnSpecifications(bool hasGlobalTablesSpec, int column_count) {
+		protected auto readColumnSpecifications(bool hasGlobalTablesSpec, int column_count) {
 			ColumnSpecification[] ret;
 			for (int i=0; i<column_count; i++) {
 				ret ~= readColumnSpecification(hasGlobalTablesSpec);
@@ -1389,7 +1409,7 @@ class Connection {
 		 *      returned for the jth column of the ith row. In other words, <rows_content>
 		 *      is composed of (<rows_count> * <columns_count>) [bytes].
 		 */
-		auto readRowsContent(FrameHeader fh, MetaData md) {
+		protected auto readRowsContent(FrameHeader fh, MetaData md) {
 			int count;
 			auto tmp = readIntNotNULL(count, sock, counter);
 			ReturnType!readRowContent[] ret;
@@ -1399,7 +1419,7 @@ class Connection {
 			}
 			return ret;
 		}
-		auto readRowContent(FrameHeader fh, MetaData md) {
+		protected auto readRowContent(FrameHeader fh, MetaData md) {
 			ubyte[][] ret;
 			for (int i=0; i<md.columns_count; i++) {
 				//log("reading index[%d], %s", i, md.column_specs[i]);
@@ -1475,7 +1495,7 @@ class Connection {
 		 *  The result to a `use` query. The body (after the kind [int]) is a single
 		 *  [string] indicating the name of the keyspace that has been set.
 		 */
-		string readSet_keyspace(FrameHeader fh) {
+		protected string readSet_keyspace(FrameHeader fh) {
 			assert(kind_ is Kind.Set_keyspace);
 			return readShortString(sock, counter);
 		}
@@ -1493,7 +1513,7 @@ class Connection {
 		 *  has been prepared. It can be used on any connection to that node and this
 		 *  until the node is restarted (after which the query must be reprepared).
 		 */
-		void readPrepared(FrameHeader fh) {
+		protected void readPrepared(FrameHeader fh) {
 			assert(false, "Not a Prepare Result class type");
 		}
 
@@ -1522,7 +1542,7 @@ class Connection {
 		Change lastChange_; string lastchange() { return lastChange_; }
 		string currentKeyspace_; string keyspace() { return currentKeyspace_; }
 		string currentTable_; string table() { return currentTable_; }
-		void readSchema_change(FrameHeader fh) {
+		protected void readSchema_change(FrameHeader fh) {
 			assert(kind_ is Kind.Schema_change);
 
 			lastChange_ = cast(Change)readShortString(sock, counter);
@@ -1531,6 +1551,7 @@ class Connection {
 			currentTable_ = readShortString(sock, counter);
 		}
 	}
+
 	class PreparedStatement : Result {
 		ubyte[] id;
 		Consistency consistency = Consistency.ANY;
@@ -1543,7 +1564,7 @@ class Connection {
 		}
 
 		/// See section 4.2.5.4.
-		override void readPrepared(FrameHeader fh) {
+		protected override void readPrepared(FrameHeader fh) {
 			assert(kind_ is Kind.Prepared);
 			id = readShortBytes(sock, counter);
 			metadata = readRowMetaData(fh);
@@ -1600,7 +1621,7 @@ class Connection {
 		NEW_NODE = "NEW_NODE",
 		UP = "UP"
 	}
-	void readEvent(FrameHeader fh) {
+	protected void readEvent(FrameHeader fh) {
 		assert(fh.isEVENT);
 	}
 	/*void writeEvents(Appender!(ubyte[]) appender, Event e...) {
@@ -1635,7 +1656,7 @@ class Connection {
 	 *           Each element is [short bytes] representing the serialized element
 	 *           value.
 	 */
-	auto readList(T)(FrameHeader fh) {
+	protected auto readList(T)(FrameHeader fh) {
 		auto size = readShort(fh);
 		T[] ret;
 		foreach (i; 0..size) {
@@ -1649,7 +1670,7 @@ class Connection {
 	 *          Each entry is composed of two [short bytes] representing the key and
 	 *          the value of the entry map.
 	 */
-	auto readMap(T,U)(FrameHeader fh) {
+	protected auto readMap(T,U)(FrameHeader fh) {
 		auto size = readShort(fh);
 		T[U] ret;
 		foreach (i; 0..size) {
@@ -1663,7 +1684,7 @@ class Connection {
 	 *          Each element is [short bytes] representing the serialized element
 	 *          value.
 	 */
-	auto readSet(T)(FrameHeader fh) {
+	protected auto readSet(T)(FrameHeader fh) {
 		auto size = readShort(fh);
 		T[] ret;
 		foreach (i; 0..size) {

@@ -19,7 +19,7 @@ class CassandraClient {
 		}
 	}
 
-	this (string host, ushort port = Connection.defaultport) {
+	this(string host, ushort port = Connection.defaultPort) {
 		m_host = host;
 		m_port = port;
 
@@ -46,8 +46,8 @@ class CassandraClient {
 
 	private Connection createConnection()
 	{
-		auto ret = new Connection();
-		ret.connect(m_host, m_port);
+		auto ret = new Connection(m_host, m_port);
+		ret.connect();
 		return ret;
 	}
 }
