@@ -1,11 +1,10 @@
 {
 	"name": "cassandra-d",
-	"description": "An example project skeleton",
-	"homepage": "http://example.org",
-	"copyright": "Copyright © 2000, Your Name",
-	"authors": [
-		"Your Name"
-	],
+	"description": "Cassandra database client",
+	"copyright": "Copyright © 2013, Rory McGuire",
+	"license": "MIT",
+	"authors": ["Rory McGuire"],
 	"dependencies": {
+		"vibe-d": {"version": "~master", "optional": true}
 	}
 }
