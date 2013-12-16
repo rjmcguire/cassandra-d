@@ -1,3 +1,5 @@
+module cassandra.internal.utils;
+
 import std.array : appender;
 import std.format : formattedWrite;
 

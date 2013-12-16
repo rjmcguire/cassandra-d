@@ -1,4 +1,4 @@
-module cassandra.tcpconnection;
+module cassandra.internal.tcpconnection;
 
 version(Have_vibe_d) {
 	pragma(msg, "build cassandra-d with vibe");

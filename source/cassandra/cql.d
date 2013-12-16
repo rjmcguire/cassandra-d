@@ -10,9 +10,8 @@ import std.stdint;
 
 import std.stdio : writeln, writef, writefln;
 
-import utils;
-
-import cassandra.tcpconnection;
+import cassandra.internal.utils;
+import cassandra.internal.tcpconnection;
 
 // some types
 unittest {
