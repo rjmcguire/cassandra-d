@@ -12,6 +12,20 @@ string hex(T)(T v) {
 	return buf.data;
 }
 
+void enforceValidIdentifier(string text)
+{
+	foreach (ch; text) {
+		switch (ch) {
+			default: throw new Exception("Invalid identifier, '"~text~"'.");
+			case 'a': .. case 'z':
+			case 'A': .. case 'Z':
+			case '0': .. case '9':
+			case '_':
+				break;
+		}
+	}
+}
+
 /*void print(ubyte[] data) {
 	import std.ascii;
 	foreach (d1; data) {

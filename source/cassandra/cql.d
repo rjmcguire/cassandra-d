@@ -732,8 +732,10 @@ private StringMultiMap readStringMultiMap(TCPConnection s, ref int counter) {
 }
 
 class Connection {
-	TCPConnection sock;
-	this(){}
+	private {
+		TCPConnection sock;
+		string m_usedKeyspace;
+	}
 
 	enum defaultport = 9042;
 	void connect(string host, short port = defaultport) {
@@ -742,6 +744,7 @@ class Connection {
 		writeln("connected. doing handshake...");
 		startup();
 		writeln("handshake completed.");
+		m_usedKeyspace = null;
 	}
 
 	void close() {
@@ -751,6 +754,14 @@ class Connection {
 		}
 		assert(counter == 0, "Did not complete reading of stream: "~ to!string(counter) ~" bytes left");
 		sock.close();
+	}
+
+	void useKeyspace(string name)
+	{
+		if (name == m_usedKeyspace) return;
+		enforceValidIdentifier(name);
+		query(`USE `~name, Consistency.ANY);
+		m_usedKeyspace = name;
 	}
 
 

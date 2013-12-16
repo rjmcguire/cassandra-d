@@ -1,7 +1,11 @@
 module cassandra.client;
 
+public import cassandra.keyspace;
 import cassandra.cql;
-import cassandra.schema;
+import cassandra.internal.utils;
+
+import std.string : format;
+
 
 class CassandraClient {
 	private {
@@ -10,6 +14,8 @@ class CassandraClient {
 		version (Have_vibe_d) {
 			import vibe.core.connectionpool : ConnectionPool;
 			ConnectionPool!Connection m_connections;
+		} else {
+			Connection m_connection;
 		}
 	}
 
@@ -19,25 +25,23 @@ class CassandraClient {
 
 		version (Have_vibe_d) {
 			m_connections = new ConnectionPool!Connection(&createConnection);
-		}
+		} else m_connection = createConnection();
 	}
 
-	CassandraSchema getSchema(string schema) {
-		return CassandraSchema(this, schema);
+	CassandraKeyspace getKeyspace(string name) {
+		return CassandraKeyspace(this, name);
 	}
 
-	/+CassandraTable getTable(string table) {
-		return CassandraTable(this, table);
-	}+/
-
-	auto getConnection() {
-		return lockConnection();
+	CassandraKeyspace createKeyspace(string name/*, ...*/) {
+		enforceValidIdentifier(name);
+		lockConnection().query(format(`CREATE KEYSPACE %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, name), Consistency.ANY);
+		return getKeyspace(name);
 	}
 
 	version (Have_vibe_d) {
 		package auto lockConnection() { return m_connections.lockConnection(); }
 	} else {
-		package auto lockConnection() { return createConnection(); }
+		package auto lockConnection() { return m_connection; }
 	}
 
 	private Connection createConnection()
