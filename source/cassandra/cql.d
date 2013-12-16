@@ -17,7 +17,7 @@ import cassandra.internal.tcpconnection;
 unittest {
 	assert(int.sizeof == 4, "int is not 32 bits"~ to!string(int.sizeof));
 }
-/**
+/*
  *                             CQL BINARY PROTOCOL v1
  *
  *
@@ -95,7 +95,9 @@ unittest {
  *  protocol with optional features without needing to change the protocol
  *  version.
  *
- *
+ */
+
+/**
  *2. Frame header
  */
 struct FrameHeader {
@@ -252,12 +254,12 @@ struct FrameHeader {
 }
 
 
-int getIntLength(Appender!(ubyte[]) appender) {
+private int getIntLength(Appender!(ubyte[]) appender) {
 	assert(appender.data.length < int.max);
 	return cast(int)appender.data.length;
 }
 
-FrameHeader readFrameHeader(TCPConnection s, ref int counter) {
+private FrameHeader readFrameHeader(TCPConnection s, ref int counter) {
 	assert(counter == 0, to!string(counter) ~" bytes unread from last Frame");
 	counter = int.max;
 	writefln("===================read frame header========================");
@@ -274,7 +276,7 @@ FrameHeader readFrameHeader(TCPConnection s, ref int counter) {
 
 	return fh;
 }
-byte readByte(TCPConnection s, ref int counter) {
+private byte readByte(TCPConnection s, ref int counter) {
 	ubyte[1] buf;
 	auto tmp = buf[0..$];
 	s.read(tmp);
@@ -290,7 +292,7 @@ byte readByte(TCPConnection s, ref int counter) {
  *
  *    [int]          A 4 bytes integer
  */
-int* readInt(ref int ptr, TCPConnection s, ref int counter) {
+private int* readInt(ref int ptr, TCPConnection s, ref int counter) {
 	import std.bitmanip : read;
 	ubyte[int.sizeof] buffer;
 	auto tmp = buffer[0..$];
@@ -313,7 +315,7 @@ int* readInt(ref int ptr, TCPConnection s, ref int counter) {
 	}
 	return &ptr;
 }
-int readIntNotNULL(ref int ptr, TCPConnection s, ref int counter) {
+private int readIntNotNULL(ref int ptr, TCPConnection s, ref int counter) {
 	auto tmp = readInt(ptr, s, counter);
 	if (tmp is null) throw new Exception("NullException");
 	return *tmp;
@@ -331,7 +333,7 @@ int readIntNotNULL(ref int ptr, TCPConnection s, ref int counter) {
 }*/
 
 ///    [short]        A 2 bytes unsigned integer
-short readShort(TCPConnection s, ref int counter) {
+private short readShort(TCPConnection s, ref int counter) {
 	import std.bitmanip : read;
 	ubyte[short.sizeof] buffer;
 	auto tmp = buffer[];
@@ -356,14 +358,14 @@ short readShort(TCPConnection s, ref int counter) {
  /**    [string]       A [short] n, followed by n bytes representing an UTF-8
  *                   string.
  */
-ubyte[] readRawBytes(TCPConnection s, ref int counter, int len) {
+private ubyte[] readRawBytes(TCPConnection s, ref int counter, int len) {
 	ubyte[] buf = new ubyte[](len);
 	auto tmp = buf[];
 	s.read(tmp);
 	counter -= buf.length;
 	return buf;
 }
-string readShortString(TCPConnection s, ref int counter) {
+private string readShortString(TCPConnection s, ref int counter) {
 	auto len = readShort(s, counter);
 	if (len < 0) { return null; }
 
@@ -386,7 +388,7 @@ string readShortString(TCPConnection s, ref int counter) {
 }*/
 
 ///    [long string]  An [int] n, followed by n bytes representing an UTF-8 string.
-string readLongString(TCPConnection s, ref int counter) {
+private string readLongString(TCPConnection s, ref int counter) {
 	int len;
 	auto tmp = readInt(len, s, counter);
 	if (tmp is null) { return null; }
@@ -402,7 +404,7 @@ string readLongString(TCPConnection s, ref int counter) {
  *    [string list]  A [short] n, followed by n [string].
  */
 alias string[] StringList;
-StringList readStringList(TCPConnection s, ref int counter) {
+private StringList readStringList(TCPConnection s, ref int counter) {
 	StringList ret;
 	auto len = readShort(s, counter);
 
@@ -417,7 +419,7 @@ StringList readStringList(TCPConnection s, ref int counter) {
 /**    [bytes]        A [int] n, followed by n bytes if n >= 0. If n < 0,
  *                   no byte should follow and the value represented is `null`.
  */
-ubyte[] readIntBytes(TCPConnection s, ref int counter) {
+private ubyte[] readIntBytes(TCPConnection s, ref int counter) {
 	int len;
 	auto tmp = readInt(len, s, counter);
 	if (tmp is null) {
@@ -433,7 +435,7 @@ ubyte[] readIntBytes(TCPConnection s, ref int counter) {
 	counter -= buf.length;
 	return buf;
 }
-auto appendIntBytes(T)(Appender!(ubyte[]) appender, T data) {
+private auto appendIntBytes(T)(Appender!(ubyte[]) appender, T data) {
 	static if (is(T == string) || is(T == ubyte[]) || is(T == byte[])) {
 		assert(data.length < int.max);
 		append(appender, cast(int)data.length);
@@ -482,7 +484,7 @@ auto appendIntBytes(T)(Appender!(ubyte[]) appender, T data) {
 
 /**    [short bytes]  A [short] n, followed by n bytes if n >= 0.
  */
-ubyte[] readShortBytes(TCPConnection s, ref int counter) {
+private ubyte[] readShortBytes(TCPConnection s, ref int counter) {
 	auto len = readShort(s, counter);
 	if (len==0) { return null; }
 
@@ -491,7 +493,7 @@ ubyte[] readShortBytes(TCPConnection s, ref int counter) {
 	counter -= buf.length;
 	return buf;
 }
-auto appendShortBytes(T)(Appender!(ubyte[]) appender, T data) {
+private auto appendShortBytes(T)(Appender!(ubyte[]) appender, T data) {
 	static if (is (T == ubyte[]) || is (T == string)) {
 		assert(data.length < short.max);
 		append(appender, cast(short)data.length);
@@ -591,7 +593,7 @@ enum Consistency : ushort  {
  */
 alias string[string] StringMap;
 
-auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
+private auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
 	import std.bitmanip : write;
 
 	ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -624,7 +626,7 @@ auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
 	return appender;
 }
 //todo: add all the append functions features to append!T(appender,T)
-auto appendRawBytes(T)(Appender!(ubyte[]) appender, T data) {
+private auto appendRawBytes(T)(Appender!(ubyte[]) appender, T data) {
 	import std.bitmanip : write;
 	static if (is (T == ushort) || is(T==uint) || is(T==int)) {
 		ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -635,7 +637,7 @@ auto appendRawBytes(T)(Appender!(ubyte[]) appender, T data) {
 	}
 }
 
-auto appendLongString(Appender!(ubyte[]) appender, string data) {
+private auto appendLongString(Appender!(ubyte[]) appender, string data) {
 	assert(data.length < int.max);
 	append(appender, cast(int)data.length);
 
@@ -644,7 +646,7 @@ auto appendLongString(Appender!(ubyte[]) appender, string data) {
 	return appender;
 }
 
-auto appendOverride(Appender!(ubyte[]) appender, StringMap sm) {
+private auto appendOverride(Appender!(ubyte[]) appender, StringMap sm) {
 	assert(sm.length < short.max);
 
 	appender.append(cast(short)sm.length);
@@ -654,17 +656,17 @@ auto appendOverride(Appender!(ubyte[]) appender, StringMap sm) {
 	}
 	return appender;
 }
-auto appendOverride(Appender!(ubyte[]) appender, Consistency c) {
+private auto appendOverride(Appender!(ubyte[]) appender, Consistency c) {
 	appender.append(cast(short)c);
 }
 
-auto appendOverride(Appender!(ubyte[]) appender, bool b) {
+private auto appendOverride(Appender!(ubyte[]) appender, bool b) {
 	if (b)
 		appender.append(cast(int)0x00000001);
 	else
 		appender.append(cast(int)0x00000000);
 }
-auto appendOverride(Appender!(ubyte[]) appender, string[] strs) {
+private auto appendOverride(Appender!(ubyte[]) appender, string[] strs) {
 	foreach (str; strs) {
 		appender.append(str);
 	}
@@ -714,7 +716,7 @@ auto append(Appender!(ubyte[]) appender, StringMap data) {
  *                      [string] and <v> is a [string list].
  */
 alias string[][string] StringMultiMap;
-StringMultiMap readStringMultiMap(TCPConnection s, ref int counter) {
+private StringMultiMap readStringMultiMap(TCPConnection s, ref int counter) {
 	//writefln("got %d to read", counter);
 	StringMultiMap smm;
 	auto count = readShort(s, counter);
@@ -2022,6 +2024,6 @@ unittest {
 }
 
 
-void log(Args...)(string s, Args args) {
+private void log(Args...)(string s, Args args) {
 	writefln(s, args);
 }
