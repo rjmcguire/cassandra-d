@@ -590,7 +590,7 @@ enum Consistency : ushort  {
 /**
  *    [string map]      A [short] n, followed by n pair <k><v> where <k> and <v> are [string].
  */
-typedef string[string] StringMap;
+alias string[string] StringMap;
 
 auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
 	import std.bitmanip : write;
@@ -1716,7 +1716,7 @@ class Connection {
 	 *                               write to the batch log when a (logged) batch
 	 *                               write was requested.
 	 */
-	 typedef string WriteType;
+	 alias string WriteType;
 	 string toString(WriteType wt) {
 		final switch (cast(string)wt) {
 			case "SIMPLE":

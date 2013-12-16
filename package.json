@@ -6,5 +6,6 @@
 	"authors": ["Rory McGuire"],
 	"dependencies": {
 		"vibe-d": {"version": "~master", "optional": true}
-	}
+	},
+	"targetType": "library"
 }
