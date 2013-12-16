@@ -7,5 +7,6 @@
 	"dependencies": {
 		"vibe-d": {"version": "~master", "optional": true}
 	},
-	"targetType": "library"
+	"targetType": "library",
+	"-ddoxFilterArgs": ["--min-protection=Protected", "--ex=cassandra.internal."]
 }
