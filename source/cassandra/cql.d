@@ -12,13 +12,7 @@ import std.stdio : writeln, writef, writefln;
 
 import utils;
 
-version (Have_vibe_d) {
-	pragma(msg, "build cassandra-d with vibe");
-	import vibe.core.net : TcpConnection, connectTcp;
-} else {
-	pragma(msg, "build cassandra-d no vibe");
-	import tcpconnection;
-}
+import cassandra.tcpconnection;
 
 // some types
 unittest {
@@ -264,7 +258,7 @@ int getIntLength(Appender!(ubyte[]) appender) {
 	return cast(int)appender.data.length;
 }
 
-FrameHeader readFrameHeader(TcpConnection s, ref int counter) {
+FrameHeader readFrameHeader(TCPConnection s, ref int counter) {
 	assert(counter == 0, to!string(counter) ~" bytes unread from last Frame");
 	counter = int.max;
 	writefln("===================read frame header========================");
@@ -281,7 +275,7 @@ FrameHeader readFrameHeader(TcpConnection s, ref int counter) {
 
 	return fh;
 }
-byte readByte(TcpConnection s, ref int counter) {
+byte readByte(TCPConnection s, ref int counter) {
 	ubyte[1] buf;
 	auto tmp = buf[0..$];
 	s.read(tmp);
@@ -297,7 +291,7 @@ byte readByte(TcpConnection s, ref int counter) {
  *
  *    [int]          A 4 bytes integer
  */
-int* readInt(ref int ptr, TcpConnection s, ref int counter) {
+int* readInt(ref int ptr, TCPConnection s, ref int counter) {
 	import std.bitmanip : read;
 	ubyte[int.sizeof] buffer;
 	auto tmp = buffer[0..$];
@@ -320,12 +314,12 @@ int* readInt(ref int ptr, TcpConnection s, ref int counter) {
 	}
 	return &ptr;
 }
-int readIntNotNULL(ref int ptr, TcpConnection s, ref int counter) {
+int readIntNotNULL(ref int ptr, TCPConnection s, ref int counter) {
 	auto tmp = readInt(ptr, s, counter);
 	if (tmp is null) throw new Exception("NullException");
 	return *tmp;
 }
-/*void write(TcpConnection s, int n) {
+/*void write(TCPConnection s, int n) {
 	import std.bitmanip : write;
 
 	ubyte[] buffer = [0,0,0,0,0,0,0,0];
@@ -338,7 +332,7 @@ int readIntNotNULL(ref int ptr, TcpConnection s, ref int counter) {
 }*/
 
 ///    [short]        A 2 bytes unsigned integer
-short readShort(TcpConnection s, ref int counter) {
+short readShort(TCPConnection s, ref int counter) {
 	import std.bitmanip : read;
 	ubyte[short.sizeof] buffer;
 	auto tmp = buffer[];
@@ -349,7 +343,7 @@ short readShort(TcpConnection s, ref int counter) {
 	counter -= short.sizeof;
 	return cast(short)r;
 }
-/*void write(TcpConnection s, short n) {
+/*void write(TCPConnection s, short n) {
 	import std.bitmanip : write;
 
 	ubyte[] buffer = [0,0,0,0,0,0,0,0];
@@ -363,14 +357,14 @@ short readShort(TcpConnection s, ref int counter) {
  /**    [string]       A [short] n, followed by n bytes representing an UTF-8
  *                   string.
  */
-ubyte[] readRawBytes(TcpConnection s, ref int counter, int len) {
+ubyte[] readRawBytes(TCPConnection s, ref int counter, int len) {
 	ubyte[] buf = new ubyte[](len);
 	auto tmp = buf[];
 	s.read(tmp);
 	counter -= buf.length;
 	return buf;
 }
-string readShortString(TcpConnection s, ref int counter) {
+string readShortString(TCPConnection s, ref int counter) {
 	auto len = readShort(s, counter);
 	if (len < 0) { return null; }
 
@@ -379,7 +373,7 @@ string readShortString(TcpConnection s, ref int counter) {
 	string str = cast(string)bytes[0..len];
 	return str;
 }
-/*void write(TcpConnection s, string str) {
+/*void write(TCPConnection s, string str) {
 	writeln("writing string");
 	if (str.length < short.max) {
 		write(s, cast(short)str.length);
@@ -393,7 +387,7 @@ string readShortString(TcpConnection s, ref int counter) {
 }*/
 
 ///    [long string]  An [int] n, followed by n bytes representing an UTF-8 string.
-string readLongString(TcpConnection s, ref int counter) {
+string readLongString(TCPConnection s, ref int counter) {
 	int len;
 	auto tmp = readInt(len, s, counter);
 	if (tmp is null) { return null; }
@@ -409,7 +403,7 @@ string readLongString(TcpConnection s, ref int counter) {
  *    [string list]  A [short] n, followed by n [string].
  */
 alias string[] StringList;
-StringList readStringList(TcpConnection s, ref int counter) {
+StringList readStringList(TCPConnection s, ref int counter) {
 	StringList ret;
 	auto len = readShort(s, counter);
 
@@ -424,7 +418,7 @@ StringList readStringList(TcpConnection s, ref int counter) {
 /**    [bytes]        A [int] n, followed by n bytes if n >= 0. If n < 0,
  *                   no byte should follow and the value represented is `null`.
  */
-ubyte[] readIntBytes(TcpConnection s, ref int counter) {
+ubyte[] readIntBytes(TCPConnection s, ref int counter) {
 	int len;
 	auto tmp = readInt(len, s, counter);
 	if (tmp is null) {
@@ -489,7 +483,7 @@ auto appendIntBytes(T)(Appender!(ubyte[]) appender, T data) {
 
 /**    [short bytes]  A [short] n, followed by n bytes if n >= 0.
  */
-ubyte[] readShortBytes(TcpConnection s, ref int counter) {
+ubyte[] readShortBytes(TCPConnection s, ref int counter) {
 	auto len = readShort(s, counter);
 	if (len==0) { return null; }
 
@@ -721,7 +715,7 @@ auto append(Appender!(ubyte[]) appender, StringMap data) {
  *                      [string] and <v> is a [string list].
  */
 alias string[][string] StringMultiMap;
-StringMultiMap readStringMultiMap(TcpConnection s, ref int counter) {
+StringMultiMap readStringMultiMap(TCPConnection s, ref int counter) {
 	//writefln("got %d to read", counter);
 	StringMultiMap smm;
 	auto count = readShort(s, counter);
@@ -737,13 +731,13 @@ StringMultiMap readStringMultiMap(TcpConnection s, ref int counter) {
 }
 
 class Connection {
-	TcpConnection sock;
+	TCPConnection sock;
 	this(){}
 
 	enum defaultport = 9042;
 	void connect(string host, short port = defaultport) {
 		writeln("connecting");
-		sock = connectTcp(host, port);
+		sock = connectTCP(host, port);
 		writeln("connected. doing handshake...");
 		startup();
 		writeln("handshake completed.");
@@ -760,9 +754,10 @@ class Connection {
 
 
 
-	private void write(TcpConnection s, Appender!(ubyte[]) appender) {
+	private void write(TCPConnection s, Appender!(ubyte[]) appender) {
 		//print(appender.data);
-		s.write(appender.data, true);
+		s.write(appender.data);
+		s.flush();
 	}
 
 
@@ -1296,7 +1291,7 @@ class Connection {
 		 *            0x0022    Set: the value is an [option], representing the type
 		 *                            of the elements of the set
 		 */
-		Option* readOption(TcpConnection s, ref int counter) {
+		Option* readOption(TCPConnection s, ref int counter) {
 			auto ret = new Option();
 			ret.id = cast(Option.Type)readShort(s, counter);
 			final switch (ret.id) {
