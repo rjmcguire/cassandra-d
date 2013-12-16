@@ -23,6 +23,9 @@ struct CassandraKeyspace {
 		m_client.lockConnection.useKeyspace(name);
 	}
 
+	@property string name() const { return m_name; }
+	@property inout(CassandraClient) client() inout { return m_client; }
+
 	Connection.Result query(string q, Consistency consistency = Consistency.ANY)
 	{
 		auto conn = m_client.lockConnection();
