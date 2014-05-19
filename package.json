@@ -1,9 +1,9 @@
 {
 	"name": "cassandra-d",
 	"description": "Cassandra database client",
-	"copyright": "Copyright © 2013, Rory McGuire",
+	"copyright": "Copyright © 2013 Rory McGuire, Copyright © 2013-2014 Sönke Ludwig",
 	"license": "MIT",
-	"authors": ["Rory McGuire"],
+	"authors": ["Rory McGuire", "Sönke Ludwig"],
 	"dependencies": {
 		"vibe-d": {"version": "~master", "optional": true}
 	},
