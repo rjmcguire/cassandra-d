@@ -13,10 +13,1121 @@ import std.traits;
 import cassandra.internal.utils;
 import cassandra.internal.tcpconnection;
 
-// some types
-unittest {
-	assert(int.sizeof == 4, "int is not 32 bits"~ to!string(int.sizeof));
+
+class Connection {
+	private {
+		TCPConnection sock;
+		string m_host;
+		ushort m_port;
+		string m_usedKeyspace;
+
+		int m_counter; // keeps track of data left after each read
+
+		bool m_compressionEnabled;
+		bool m_tracingEnabled;
+		byte m_streamID;
+		FrameHeader.Version m_transportVersion; // this is just the protocol version number
+	}
+
+	enum defaultPort = 9042;
+
+	this(string host, ushort port = defaultPort)
+	{
+		m_host = host;
+		m_port = port;
+	}
+
+	void connect()
+	{
+		if (!sock || !sock.connected) {
+			writeln("connecting");
+			sock = connectTCP(m_host, m_port);
+			writeln("connected. doing handshake...");
+			startup();
+			writeln("handshake completed.");
+			m_usedKeyspace = null;
+		}
+	}
+
+	void close()
+	{
+		if (m_counter > 0) {
+			auto buf = readRawBytes(sock, m_counter, m_counter);
+			writeln("buf:", buf);
+		}
+		assert(m_counter == 0, "Did not complete reading of stream: "~ to!string(m_counter) ~" bytes left");
+		sock.close();
+		sock = null;
+	}
+
+	void useKeyspace(string name)
+	{
+		if (name == m_usedKeyspace) return;
+		enforceValidIdentifier(name);
+		query(`USE `~name, Consistency.any);
+		m_usedKeyspace = name;
+	}
+
+
+
+	private void write(TCPConnection s, Appender!(ubyte[]) appender)
+	{
+		//print(appender.data);
+		s.write(appender.data);
+		s.flush();
+	}
+
+
+	//vvvvvvvvvvvvvvvvvvvvv CQL Implementation vvvvvvvvvvvvvvvvvv
+	/// Make a FrameHeader corresponding to this Stream
+	FrameHeader makeHeader(FrameHeader.OpCode opcode) {
+		FrameHeader fh;
+		switch (m_transportVersion) {
+			case 1: fh.version_ = FrameHeader.Version.V1Request; break;
+			case 2: fh.version_ = FrameHeader.Version.V2Request; break;
+			default: assert(0, "invalid transport_version");
+		}
+		fh.compress = m_compressionEnabled;
+		fh.trace = m_tracingEnabled;
+		fh.streamid = m_streamID;
+		fh.opcode = opcode;
+		return fh;
+	}
+
+	/**4. Messages
+	 *
+	 *4.1. Requests
+	 *
+	 *  Note that outside of their normal responses (described below), all requests
+	 *  can get an ERROR message (Section 4.2.1) as response.
+	 *
+	 *4.1.1. STARTUP
+	 *
+	 *  Initialize the connection. The server will respond by either a READY message
+	 *  (in which case the connection is ready for queries) or an AUTHENTICATE message
+	 *  (in which case credentials will need to be provided using CREDENTIALS).
+	 *
+	 *  This must be the first message of the connection, except for OPTIONS that can
+	 *  be sent before to find out the options supported by the server. Once the
+	 *  connection has been initialized, a client should not send any more STARTUP
+	 *  message.
+	 *
+	 *  The body is a [string map] of options. Possible options are:
+	 *    - "CQL_VERSION": the version of CQL to use. This option is mandatory and
+	 *      currenty, the only version supported is "3.0.0". Note that this is
+	 *      different from the protocol version.
+	 *    - "COMPRESSION": the compression algorithm to use for frames (See section 5).
+	 *      This is optional, if not specified no compression will be used.
+	 */
+	 private void startup(string compression_algorithm = "") {
+		StringMap data;
+		data["CQL_VERSION"] = "3.0.0";
+		if (compression_algorithm.length > 0)
+			data["COMPRESSION"] = compression_algorithm;
+
+		auto fh = makeHeader(FrameHeader.OpCode.startup);
+
+		auto bytebuf = appender!(ubyte[])();
+		bytebuf.append(data);
+		fh.length = bytebuf.getIntLength();
+		write(sock, appender!(ubyte[])().append(fh.bytes));
+		write(sock, bytebuf);
+
+		fh = readFrameHeader(sock, m_counter);
+		if (fh.isAUTHENTICATE) {
+			fh = authenticate(fh);
+		}
+		throwOnError(fh);
+	}
+
+	private FrameHeader authenticate(FrameHeader fh) {
+		auto authenticatorname = readAuthenticate(fh);
+		auto authenticator = getAuthenticator(authenticatorname);
+		sendCredentials(authenticator.getCredentials());
+		throw new Exception("NotImplementedException Authentication: "~ authenticatorname);
+	}
+
+
+	/**
+	 *4.1.2. CREDENTIALS
+	 *
+	 *  Provides credentials information for the purpose of identification. This
+	 *  message comes as a response to an AUTHENTICATE message from the server, but
+	 *  can be use later in the communication to change the authentication
+	 *  information.
+	 *
+	 *  The body is a list of key/value informations. It is a [short] n, followed by n
+	 *  pair of [string]. These key/value pairs are passed as is to the Cassandra
+	 *  IAuthenticator and thus the detail of which informations is needed depends on
+	 *  that authenticator.
+	 *
+	 *  The response to a CREDENTIALS is a READY message (or an ERROR message).
+	 */
+	private void sendCredentials(StringMap data) {
+		auto fh = makeHeader(FrameHeader.OpCode.credentials);
+		auto bytebuf = appender!(ubyte[])();
+		bytebuf.append(data);
+		fh.length = bytebuf.getIntLength;
+		write(sock, appender!(ubyte[])().append(fh.bytes));
+		write(sock, bytebuf);
+
+		assert(false, "todo: read credentials response");
+	}
+
+	/**
+	 *4.1.3. OPTIONS
+	 *
+	 *  Asks the server to return what STARTUP options are supported. The body of an
+	 *  OPTIONS message should be empty and the server will respond with a SUPPORTED
+	 *  message.
+	 */
+	StringMultiMap requestOptions() {
+		connect();
+		auto fh = makeHeader(FrameHeader.OpCode.options);
+		write(sock, appender!(ubyte[])().append(fh.bytes));
+		fh = readFrameHeader(sock, m_counter);
+		if (!fh.isSUPPORTED) {
+			throw new Exception("CQLProtocolException, Unknown response to OPTIONS request");
+		}
+		return readSupported(fh);
+	}
+
+	 /**
+	 *4.1.4. QUERY
+	 *
+	 *  Performs a CQL query. The body of the message consists of a CQL query as a [long
+	 *  string] followed by the [consistency] for the operation.
+	 *
+	 *  Note that the consistency is ignored by some queries (USE, CREATE, ALTER,
+	 *  TRUNCATE, ...).
+	 *
+	 *  The server will respond to a QUERY message with a RESULT message, the content
+	 *  of which depends on the query.
+	 */
+	Result query(string q, Consistency consistency) {
+		connect();
+		auto fh = makeHeader(FrameHeader.OpCode.query);
+		auto bytebuf = appender!(ubyte[])();
+		writeln("-----------");
+		bytebuf.appendLongString(q);
+		//print(bytebuf.data);
+		writeln("-----------");
+		bytebuf.append(consistency);
+		fh.length = bytebuf.getIntLength;
+		write(sock, appender!(ubyte[])().append(fh.bytes));
+		write(sock, bytebuf);
+
+		fh = readFrameHeader(sock, m_counter);
+		throwOnError(fh);
+		return new Result(fh);
+	}
+	bool insert(string q, Consistency consistency = Consistency.any) {
+		connect();
+		assert(q[0.."insert".length]=="INSERT");
+		auto res = query(q, consistency);
+		if (res.kind == Result.Kind.void_) {
+			return true;
+		}
+		throw new Exception("CQLProtocolException: expected void response to insert");
+	}
+	Result select(string q, Consistency consistency = Consistency.quorum) {
+		connect();
+		import std.string : icmp;
+		assert(icmp(q[0.."select".length], "SELECT")==0);
+		return query(q, consistency);
+	}
+
+	 /**
+	 *4.1.5. PREPARE
+	 *
+	 *  Prepare a query for later execution (through EXECUTE). The body consists of
+	 *  the CQL query to prepare as a [long string].
+	 *
+	 *  The server will respond with a RESULT message with a `prepared` kind (0x0004,
+	 *  see Section 4.2.5).
+	 */
+	PreparedStatement prepare(string q) {
+		connect();
+		auto fh = makeHeader(FrameHeader.OpCode.prepare);
+		auto bytebuf = appender!(ubyte[])();
+		writeln("---------=-");
+		bytebuf.appendLongString(q);
+		fh.length = bytebuf.getIntLength;
+		write(sock, appender!(ubyte[])().append(fh.bytes));
+		write(sock, bytebuf);
+		writeln("---------=-");
+
+
+
+		fh = readFrameHeader(sock, m_counter);
+		throwOnError(fh);
+		if (!fh.isRESULT) {
+			throw new Exception("CQLProtocolException, Unknown response to PREPARE command");
+		}
+		return new PreparedStatement(fh);
+	}
+
+	/**
+	 *4.1.6. EXECUTE
+	 *
+	 *  Executes a prepared query. The body of the message must be:
+	 *    <id><n><value_1>....<value_n><consistency>
+	 *  where:
+	 *    - <id> is the prepared query ID. It's the [short bytes] returned as a
+	 *      response to a PREPARE message.
+	 *    - <n> is a [short] indicating the number of following values.
+	 *    - <value_1>...<value_n> are the [bytes] to use for bound variables in the
+	 *      prepared query.
+	 *    - <consistency> is the [consistency] level for the operation.
+	 *
+	 *  Note that the consistency is ignored by some (prepared) queries (USE, CREATE,
+	 *  ALTER, TRUNCATE, ...).
+	 *
+	 *  The response from the server will be a RESULT message.
+	 */
+	private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, Args args) {
+		connect();
+		auto fh = makeHeader(FrameHeader.OpCode.execute);
+		auto bytebuf = appender!(ubyte[])();
+		writeln("-----=----=-");
+		bytebuf.appendShortBytes(preparedStatementID);
+		assert(args.length < short.max);
+		bytebuf.append(cast(short)args.length);
+		foreach (arg; args) {
+			bytebuf.appendIntBytes(arg);
+		}
+		bytebuf.append(consistency);
+
+		fh.length = bytebuf.getIntLength;
+		write(sock, appender!(ubyte[])().append(fh.bytes));
+		writeln("Sending: ", bytebuf.data);
+		write(sock, bytebuf);
+		writeln("-----=----=-");
+
+		fh = readFrameHeader(sock, m_counter);
+		throwOnError(fh);
+		if (!fh.isRESULT) {
+			throw new Exception("CQLProtocolException, Unknown response to Execute command: "~ to!string(fh.opcode));
+		}
+		return new Result(fh);
+	}
+
+	/**
+	 *4.1.7. REGISTER
+	 *
+	 *  Register this connection to receive some type of events. The body of the
+	 *  message is a [string list] representing the event types to register to. See
+	 *  section 4.2.6 for the list of valid event types.
+	 *
+	 *  The response to a REGISTER message will be a READY message.
+	 *
+	 *  Please note that if a client driver maintains multiple connections to a
+	 *  Cassandra node and/or connections to multiple nodes, it is advised to
+	 *  dedicate a handful of connections to receive events, but to *not* register
+	 *  for events on all connections, as this would only result in receiving
+	 *  multiple times the same event messages, wasting bandwidth.
+	 */
+	void listen(Event events...) {
+		connect();
+		auto fh = makeHeader(FrameHeader.OpCode.register);
+		auto bytebuf = appender!(ubyte[])();
+		auto tmpbuf = appender!(ubyte[])();
+		tmpbuf.append(events);
+		fh.length = tmpbuf.getIntLength;
+		bytebuf.put(fh.bytes);
+		bytebuf.append(tmpbuf);
+		write(sock, bytebuf);
+
+		fh = readFrameHeader(sock, m_counter);
+		if (!fh.isREADY) {
+			throw new Exception("CQLProtocolException, Unknown response to REGISTER command");
+		}
+		assert(false, "Untested: setup of event listening");
+	}
+
+	/**
+	 *4.2. Responses
+	 *
+	 *  This section describes the content of the frame body for the different
+	 *  responses. Please note that to make room for future evolution, clients should
+	 *  support extra informations (that they should simply discard) to the one
+	 *  described in this document at the end of the frame body.
+	 *
+	 *4.2.1. ERROR
+	 *
+	 *  Indicates an error processing a request. The body of the message will be an
+	 *  error code ([int]) followed by a [string] error message. Then, depending on
+	 *  the exception, more content may follow. The error codes are defined in
+	 *  Section 7, along with their additional content if any.
+	 */
+	protected void throwOnError(FrameHeader fh) {
+		if (!fh.isERROR) return;
+		int tmp;
+		Error code;
+		readIntNotNULL(tmp, sock, m_counter);
+		code = cast(Error)tmp;
+
+		auto msg = readShortString(sock, m_counter);
+
+		auto spec_msg = toString(code);
+
+		final switch (code) {
+			case Error.serverError:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.protocolError:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.badCredentials:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.unavailableException:
+				auto cs = cast(Consistency)readShort(sock, m_counter);
+				auto required = readIntNotNULL(tmp, sock, m_counter);
+				auto alive = readIntNotNULL(tmp, sock, m_counter);
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ .to!string(cs) ~" required:"~ to!string(required) ~" alive:"~ to!string(alive));
+			case Error.overloaded:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.isBootstrapping:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.truncateError:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.writeTimeout:
+				auto cl = cast(Consistency)readShort(sock, m_counter);
+				auto received = readIntNotNULL(tmp, sock, m_counter);
+				auto blockfor = readIntNotNULL(tmp, sock, m_counter); // WARN: the type for blockfor does not seem to be in the spec!!!
+				auto writeType = cast(WriteType)readShortString(sock, m_counter);
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ to!string(cl) ~" received:"~ to!string(received) ~" blockfor:"~ to!string(blockfor) ~" writeType:"~ toString(writeType));
+			case Error.readTimeout:
+				auto cl = cast(Consistency)readShort(sock, m_counter);
+				auto received = readIntNotNULL(tmp, sock, m_counter);
+				auto blockfor = readIntNotNULL(tmp, sock, m_counter); // WARN: the type for blockfor does not seem to be in the spec!!!
+				auto data_present = readByte(sock, m_counter);
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ to!string(cl) ~" received:"~ to!string(received) ~" blockfor:"~ to!string(blockfor) ~" data_present:"~ (data_present==0x00?"false":"true"));
+			case Error.syntaxError:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.unauthorized:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.invalid:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.configError:
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
+			case Error.alreadyExists:
+				auto ks = readShortString(sock, m_counter);
+				auto table = readShortString(sock, m_counter);
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~", keyspace:"~ks ~", table:"~ table );
+			case Error.unprepared:
+				auto unknown_id = readShort(sock, m_counter);
+				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~":"~ to!string(unknown_id));
+		}
+	}
+
+	 /*
+	 *4.2.2. READY
+	 *
+	 *  Indicates that the server is ready to process queries. This message will be
+	 *  sent by the server either after a STARTUP message if no authentication is
+	 *  required, or after a successful CREDENTIALS message.
+	 *
+	 *  The body of a READY message is empty.
+	 *
+	 *
+	 *4.2.3. AUTHENTICATE
+	 *
+	 *  Indicates that the server require authentication. This will be sent following
+	 *  a STARTUP message and must be answered by a CREDENTIALS message from the
+	 *  client to provide authentication informations.
+	 *
+	 *  The body consists of a single [string] indicating the full class name of the
+	 *  IAuthenticator in use.
+	 */
+	protected string readAuthenticate(FrameHeader fh) {
+		assert(fh.isAUTHENTICATE);
+		return readShortString(sock, m_counter);
+	}
+
+	/**
+	 *4.2.4. SUPPORTED
+	 *
+	 *  Indicates which startup options are supported by the server. This message
+	 *  comes as a response to an OPTIONS message.
+	 *
+	 *  The body of a SUPPORTED message is a [string multimap]. This multimap gives
+	 *  for each of the supported STARTUP options, the list of supported values.
+	 */
+	protected StringMultiMap readSupported(FrameHeader fh) {
+		return readStringMultiMap(sock, m_counter);
+	}
+
+	/**
+	 *4.2.5. RESULT
+	 *
+	 *  The result to a query (QUERY, PREPARE or EXECUTE messages).
+	 *
+	 *  The first element of the body of a RESULT message is an [int] representing the
+	 *  `kind` of result. The rest of the body depends on the kind. The kind can be
+	 *  one of:
+	 *    0x0001    Void: for results carrying no information.
+	 *    0x0002    Rows: for results to select queries, returning a set of rows.
+	 *    0x0003    Set_keyspace: the result to a `use` query.
+	 *    0x0004    Prepared: result to a PREPARE message.
+	 *    0x0005    Schema_change: the result to a schema altering query.
+	 *
+	 *  The body for each kind (after the [int] kind) is defined below.
+	 */
+	class Result {
+		Change lastChange_;
+		string currentKeyspace_;
+		string currentTable_;
+		FrameHeader fh;
+		private Kind kind_;
+		Kind kind() { return kind_; }
+
+		this(FrameHeader fh) {
+			this.fh = fh;
+			int tmp;
+			kind_ = cast(Kind)readIntNotNULL(tmp, sock, m_counter);
+			final switch (kind_) {
+				case Kind.void_:
+					readVoid(fh); break;
+				case Kind.rows:
+					readRows(fh); break;
+				case Kind.setKeyspace:
+					readSet_keyspace(fh); break;
+				case Kind.prepared:
+					readPrepared(fh); break;
+				case Kind.schemaChange:
+					readSchema_change(fh); break;
+			}
+		}
+
+		@property string lastchange() { return lastChange_; }
+		@property string keyspace() { return currentKeyspace_; }
+		@property string table() { return currentTable_; }
+
+		auto rows() {
+			assert(kind_ == Kind.rows);
+			return rows_;
+		}
+
+		enum Kind : short {
+			void_ = 0x0001,
+			rows = 0x0002,
+			setKeyspace = 0x0003,
+			prepared = 0x0004,
+			schemaChange = 0x0005
+		}
+		/**
+		 *4.2.5.1. Void
+		 *
+		 *  The rest of the body for a Void result is empty. It indicates that a query was
+		 *  successful without providing more information.
+		 */
+		void readVoid(FrameHeader fh) {
+			assert(kind_ == Kind.void_);
+		}
+		/**
+		 *4.2.5.2. Rows
+		 *
+		 *  Indicates a set of rows. The rest of body of a Rows result is:
+		 *    <metadata><rows_count><rows_content>
+		 */
+		MetaData metadata;
+		ubyte[][][] rows_;
+		auto readRows(FrameHeader fh) {
+			assert(kind_ == Kind.rows || kind_ == Kind.prepared);
+			metadata = readRowMetaData(fh);
+			// <rows_count> is read within readRowsContent
+			rows_ = readRowsContent(fh, metadata);
+		}
+
+		/**  where:
+		 *    - <metadata> is composed of:
+		 *        <flags><columns_count><global_table_spec>?<col_spec_1>...<col_spec_n>
+		 *      where:
+		 *        - <flags> is an [int]. The bits of <flags> provides information on the
+		 *          formatting of the remaining informations. A flag is set if the bit
+		 *          corresponding to its `mask` is set. Supported flags are, given there
+		 *          mask:
+		 *            0x0001    Global_tables_spec: if set, only one table spec (keyspace
+		 *                      and table name) is provided as <global_table_spec>. If not
+		 *                      set, <global_table_spec> is not present.
+		 *        - <columns_count> is an [int] representing the number of columns selected
+		 *          by the query this result is of. It defines the number of <col_spec_i>
+		 *          elements in and the number of element for each row in <rows_content>.
+		 *        - <global_table_spec> is present if the Global_tables_spec is set in
+		 *          <flags>. If present, it is composed of two [string] representing the
+		 *          (unique) keyspace name and table name the columns return are of.
+		 */
+		struct MetaData {
+			int flags; enum GLOBAL_TABLES_SPEC = 0x0001; @property bool hasGlobalTablesSpec() { return flags & MetaData.GLOBAL_TABLES_SPEC ? true : false; }
+			int columns_count;
+			string[2] global_table_spec;
+			ColumnSpecification[] column_specs;
+		}
+		MetaData readRowMetaData(FrameHeader fh) {
+			auto md = MetaData();
+			md.flags.readIntNotNULL(sock, m_counter);
+			md.columns_count.readIntNotNULL(sock, m_counter);
+			if (md.flags & MetaData.GLOBAL_TABLES_SPEC) {
+				md.global_table_spec[0] = readShortString(sock, m_counter);
+				md.global_table_spec[1] = readShortString(sock, m_counter);
+			}
+			md.column_specs = readColumnSpecifications(md.flags & MetaData.GLOBAL_TABLES_SPEC, md.columns_count);
+			writeln("got spec: ", md);
+			return md;
+		}
+
+		/**       - <col_spec_i> specifies the columns returned in the query. There is
+		 *          <column_count> such column specification that are composed of:
+		 *            (<ksname><tablename>)?<column_name><type>
+		 *          The initial <ksname> and <tablename> are two [string] are only present
+		 *          if the Global_tables_spec flag is not set. The <column_name> is a
+		 *          [string] and <type> is an [option] that correspond to the column name
+		 *          and type. The option for <type> is either a native type (see below),
+		 *          in which case the option has no value, or a 'custom' type, in which
+		 *          case the value is a [string] representing the full qualified class
+		 *          name of the type represented. Valid option ids are:
+		 *            0x0000    Custom: the value is a [string], see above.
+		 *            0x0001    Ascii
+		 *            0x0002    Bigint
+		 *            0x0003    Blob
+		 *            0x0004    Boolean
+		 *            0x0005    Counter
+		 *            0x0006    Decimal
+		 *            0x0007    Double
+		 *            0x0008    Float
+		 *            0x0009    Int
+		 *            0x000A    Text
+		 *            0x000B    Timestamp
+		 *            0x000C    Uuid
+		 *            0x000D    Varchar
+		 *            0x000E    Varint
+		 *            0x000F    Timeuuid
+		 *            0x0010    Inet
+		 *            0x0020    List: the value is an [option], representing the type
+		 *                            of the elements of the list.
+		 *            0x0021    Map: the value is two [option], representing the types of the
+		 *                           keys and values of the map
+		 *            0x0022    Set: the value is an [option], representing the type
+		 *                            of the elements of the set
+		 */
+		Option* readOption(TCPConnection s) {
+			auto ret = new Option();
+			ret.id = cast(Option.Type)readShort(s, m_counter);
+			final switch (ret.id) {
+				case Option.Type.custom: ret.string_value = readShortString(s, m_counter); break;
+				case Option.Type.ascii: break;
+				case Option.Type.bigInt: break;
+				case Option.Type.blob: break;
+				case Option.Type.boolean: break;
+				case Option.Type.counter: break;
+				case Option.Type.decimal: break;
+				case Option.Type.double_: break;
+				case Option.Type.float_: break;
+				case Option.Type.int_: break;
+				case Option.Type.text: break;
+				case Option.Type.timestamp: break;
+				case Option.Type.uuid: break;
+				case Option.Type.varChar: break;
+				case Option.Type.varInt: break;
+				case Option.Type.timeUUID: break;
+				case Option.Type.inet: break;
+				case Option.Type.list: ret.option_value = readOption(s); break;
+				case Option.Type.map:
+					ret.key_values_option_value[0] = readOption(s);
+					ret.key_values_option_value[1] = readOption(s);
+					break;
+				case Option.Type.set: ret.option_value = readOption(s); break;
+			}
+			return ret;
+		}
+
+		struct ColumnSpecification {
+			string ksname;
+			string tablename;
+
+			string name;
+			Option type;
+		}
+		protected auto readColumnSpecification(bool hasGlobalTablesSpec) {
+			ColumnSpecification ret;
+			if (!hasGlobalTablesSpec) {
+				ret.ksname = readShortString(sock, m_counter);
+				ret.tablename = readShortString(sock, m_counter);
+			}
+			ret.name = readShortString(sock, m_counter);
+			ret.type = *readOption(sock);
+			return ret;
+		}
+		protected auto readColumnSpecifications(bool hasGlobalTablesSpec, int column_count) {
+			ColumnSpecification[] ret;
+			for (int i=0; i<column_count; i++) {
+				ret ~= readColumnSpecification(hasGlobalTablesSpec);
+			}
+			return ret;
+		}
+
+		/**    - <rows_count> is an [int] representing the number of rows present in this
+		 *      result. Those rows are serialized in the <rows_content> part.
+		 *    - <rows_content> is composed of <row_1>...<row_m> where m is <rows_count>.
+		 *      Each <row_i> is composed of <value_1>...<value_n> where n is
+		 *      <columns_count> and where <value_j> is a [bytes] representing the value
+		 *      returned for the jth column of the ith row. In other words, <rows_content>
+		 *      is composed of (<rows_count> * <columns_count>) [bytes].
+		 */
+		protected auto readRowsContent(FrameHeader fh, MetaData md) {
+			int count;
+			auto tmp = readIntNotNULL(count, sock, m_counter);
+			ReturnType!readRowContent[] ret;
+			//log("reading %d rows", count);
+			for (int i=0; i<count; i++) {
+				ret ~= readRowContent(fh, md);
+			}
+			return ret;
+		}
+		protected auto readRowContent(FrameHeader fh, MetaData md) {
+			ubyte[][] ret;
+			for (int i=0; i<md.columns_count; i++) {
+				//log("reading index[%d], %s", i, md.column_specs[i]);
+				final switch (md.column_specs[i].type.id) {
+					case Option.Type.custom:
+						log("warning column %s has custom type", md.column_specs[i].name);
+						ret ~= readIntBytes(sock, m_counter);
+						break;
+					case Option.Type.counter:
+						ret ~= readIntBytes(sock, m_counter);
+						throw new Exception("Read Counter Type has not been checked this is what we got: "~ cast(string)ret[$-1]);
+						//break;
+					case Option.Type.decimal:
+						auto twobytes = readRawBytes(sock, m_counter, 2);
+						if (twobytes == [0xff,0xff]) {
+							twobytes = readRawBytes(sock, m_counter, 2);
+							ret ~= null;
+							break;
+						}
+						if (twobytes[0]==0x01 && twobytes[1]==0x01) {
+							ret ~= readIntBytes(sock, m_counter);
+						} else {
+							auto writer = appender!string();
+							formattedWrite(writer, "%s", twobytes);
+							throw new Exception("New kind of decimal encountered"~ writer.data);
+						}
+						break;
+					case Option.Type.boolean:
+						ret ~= readRawBytes(sock, m_counter, int.sizeof);
+						break;
+
+					case Option.Type.ascii:
+						goto case;
+					case Option.Type.bigInt:
+						goto case;
+					case Option.Type.blob:
+						goto case;
+					case Option.Type.double_:
+						goto case;
+					case Option.Type.float_:
+						goto case;
+					case Option.Type.int_:
+						goto case;
+					case Option.Type.text:
+						goto case;
+					case Option.Type.timestamp:
+						goto case;
+					case Option.Type.uuid:
+						goto case;
+					case Option.Type.varChar:
+						goto case;
+					case Option.Type.varInt:
+						goto case;
+					case Option.Type.timeUUID:
+						goto case;
+					case Option.Type.inet:
+						goto case;
+					case Option.Type.list:
+						goto case;
+					case Option.Type.map:
+						goto case;
+					case Option.Type.set:
+						ret ~= readIntBytes(sock, m_counter);
+						break;
+
+				}
+			}
+			return ret;
+		}
+
+		/**4.2.5.3. Set_keyspace
+		 *
+		 *  The result to a `use` query. The body (after the kind [int]) is a single
+		 *  [string] indicating the name of the keyspace that has been set.
+		 */
+		protected string readSet_keyspace(FrameHeader fh) {
+			assert(kind_ is Kind.setKeyspace);
+			return readShortString(sock, m_counter);
+		}
+
+		/**
+		 *4.2.5.4. Prepared
+		 *
+		 *  The result to a PREPARE message. The rest of the body of a Prepared result is:
+		 *    <id><metadata>
+		 *  where:
+		 *    - <id> is [short bytes] representing the prepared query ID.
+		 *    - <metadata> is defined exactly as for a Rows RESULT (See section 4.2.5.2).
+		 *
+		 *  Note that prepared query ID return is global to the node on which the query
+		 *  has been prepared. It can be used on any connection to that node and this
+		 *  until the node is restarted (after which the query must be reprepared).
+		 */
+		protected void readPrepared(FrameHeader fh) {
+			assert(false, "Not a Prepare Result class type");
+		}
+
+		/**
+		 *4.2.5.5. Schema_change
+		 *
+		 *  The result to a schema altering query (creation/update/drop of a
+		 *  keyspace/table/index). The body (after the kind [int]) is composed of 3
+		 *  [string]:
+		 *    <change><keyspace><table>
+		 *  where:
+		 *    - <change> describe the type of change that has occured. It can be one of
+		 *      "CREATED", "UPDATED" or "DROPPED".
+		 *    - <keyspace> is the name of the affected keyspace or the keyspace of the
+		 *      affected table.
+		 *    - <table> is the name of the affected table. <table> will be empty (i.e.
+		 *      the empty string "") if the change was affecting a keyspace and not a
+		 *      table.
+		 *
+		 *  Note that queries to create and drop an index are considered as change
+		 *  updating the table the index is on.
+		 */
+		enum Change : string {
+			created = "CREATED",
+			updated = "UPDATED",
+			dropped = "DROPPED"
+		}
+
+		protected void readSchema_change(FrameHeader fh) {
+			assert(kind_ is Kind.schemaChange);
+
+			lastChange_ = cast(Change)readShortString(sock, m_counter);
+
+			currentKeyspace_ = readShortString(sock, m_counter);
+			currentTable_ = readShortString(sock, m_counter);
+		}
+	}
+
+	class PreparedStatement : Result {
+		ubyte[] id;
+		Consistency consistency = Consistency.any;
+
+		this(FrameHeader fh) {
+			super(fh);
+			if (kind != Result.Kind.prepared) {
+				throw new Exception("CQLProtocolException, Unknown result type for PREPARE command");
+			}
+		}
+
+		/// See section 4.2.5.4.
+		protected override void readPrepared(FrameHeader fh) {
+			assert(kind_ is Kind.prepared);
+			id = readShortBytes(sock, m_counter);
+			metadata = readRowMetaData(fh);
+		}
+
+		Result execute(Args...)(Args args) {
+			return Connection.execute(id, consistency, args);
+		}
+
+		override
+		string toString() {
+			return "PreparedStatement("~id.hex~")";
+		}
+	}
+
+	/**
+	 *4.2.6. EVENT
+	 *
+	 *  And event pushed by the server. A client will only receive events for the
+	 *  type it has REGISTER to. The body of an EVENT message will start by a
+	 *  [string] representing the event type. The rest of the message depends on the
+	 *  event type. The valid event types are:
+	 *    - "TOPOLOGY_CHANGE": events related to change in the cluster topology.
+	 *      Currently, events are sent when new nodes are added to the cluster, and
+	 *      when nodes are removed. The body of the message (after the event type)
+	 *      consists of a [string] and an [inet], corresponding respectively to the
+	 *      type of change ("NEW_NODE" or "REMOVED_NODE") followed by the address of
+	 *      the new/removed node.
+	 *    - "STATUS_CHANGE": events related to change of node status. Currently,
+	 *      up/down events are sent. The body of the message (after the event type)
+	 *      consists of a [string] and an [inet], corresponding respectively to the
+	 *      type of status change ("UP" or "DOWN") followed by the address of the
+	 *      concerned node.
+	 *    - "SCHEMA_CHANGE": events related to schema change. The body of the message
+	 *      (after the event type) consists of 3 [string] corresponding respectively
+	 *      to the type of schema change ("CREATED", "UPDATED" or "DROPPED"),
+	 *      followed by the name of the affected keyspace and the name of the
+	 *      affected table within that keyspace. For changes that affect a keyspace
+	 *      directly, the table name will be empty (i.e. the empty string "").
+	 *
+	 *  All EVENT message have a streamId of -1 (Section 2.3).
+	 *
+	 *  Please note that "NEW_NODE" and "UP" events are sent based on internal Gossip
+	 *  communication and as such may be sent a short delay before the binary
+	 *  protocol server on the newly up node is fully started. Clients are thus
+	 *  advise to wait a short time before trying to connect to the node (1 seconds
+	 *  should be enough), otherwise they may experience a connection refusal at
+	 *  first.
+	 */
+	enum Event : string {
+		topologyChange = "TOPOLOGY_CHANGE",
+		statusChange = "STATUS_CHANGE",
+		schemaChange = "SCHEMA_CHANGE",
+		newNode = "NEW_NODE",
+		up = "UP"
+	}
+	protected void readEvent(FrameHeader fh) {
+		assert(fh.isEVENT);
+	}
+	/*void writeEvents(Appender!(ubyte[]) appender, Event e...) {
+		appender.append(e);
+	}*/
+
+
+	/**5. Compression
+	 *
+	 *  Frame compression is supported by the protocol, but then only the frame body
+	 *  is compressed (the frame header should never be compressed).
+	 *
+	 *  Before being used, client and server must agree on a compression algorithm to
+	 *  use, which is done in the STARTUP message. As a consequence, a STARTUP message
+	 *  must never be compressed.  However, once the STARTUP frame has been received
+	 *  by the server can be compressed (including the response to the STARTUP
+	 *  request). Frame do not have to be compressed however, even if compression has
+	 *  been agreed upon (a server may only compress frame above a certain size at its
+	 *  discretion). A frame body should be compressed if and only if the compressed
+	 *  flag (see Section 2.2) is set.
+	 */
+
+	/**
+	 *6. Collection types
+	 *
+	 *  This section describe the serialization format for the collection types:
+	 *  list, map and set. This serialization format is both useful to decode values
+	 *  returned in RESULT messages but also to encode values for EXECUTE ones.
+	 *
+	 *  The serialization formats are:
+	 *     List: a [short] n indicating the size of the list, followed by n elements.
+	 *           Each element is [short bytes] representing the serialized element
+	 *           value.
+	 */
+	protected auto readList(T)(FrameHeader fh) {
+		auto size = readShort(fh);
+		T[] ret;
+		foreach (i; 0..size) {
+			ret ~= readBytes!T(sock, m_counter);
+		}
+		return ret;
+
+	}
+
+	/**     Map: a [short] n indicating the size of the map, followed by n entries.
+	 *          Each entry is composed of two [short bytes] representing the key and
+	 *          the value of the entry map.
+	 */
+	protected auto readMap(T,U)(FrameHeader fh) {
+		auto size = readShort(fh);
+		T[U] ret;
+		foreach (i; 0..size) {
+			ret[readShortBytes!T(sock, m_counter)] = readShortBytes!U(sock, m_counter);
+
+		}
+		return ret;
+	}
+
+	/**     Set: a [short] n indicating the size of the set, followed by n elements.
+	 *          Each element is [short bytes] representing the serialized element
+	 *          value.
+	 */
+	protected auto readSet(T)(FrameHeader fh) {
+		auto size = readShort(fh);
+		T[] ret;
+		foreach (i; 0..size) {
+			ret[] ~= readBytes!T(sock, m_counter);
+
+		}
+		return ret;
+	}
+
+	/**
+	 *7. Error codes
+	 *
+	 *  The supported error codes are described below:
+	 *    0x0000    Server error: something unexpected happened. This indicates a
+	 *              server-side bug.
+	 *    0x000A    Protocol error: some client message triggered a protocol
+	 *              violation (for instance a QUERY message is sent before a STARTUP
+	 *              one has been sent)
+	 *    0x0100    Bad credentials: CREDENTIALS request failed because Cassandra
+	 *              did not accept the provided credentials.
+	 *
+	 *    0x1000    Unavailable exception. The rest of the ERROR message body will be
+	 *                <cl><required><alive>
+	 *              where:
+	 *                <cl> is the [consistency] level of the query having triggered
+	 *                     the exception.
+	 *                <required> is an [int] representing the number of node that
+	 *                           should be alive to respect <cl>
+	 *                <alive> is an [int] representing the number of replica that
+	 *                        were known to be alive when the request has been
+	 *                        processed (since an unavailable exception has been
+	 *                        triggered, there will be <alive> < <required>)
+	 *    0x1001    Overloaded: the request cannot be processed because the
+	 *              coordinator node is overloaded
+	 *    0x1002    Is_bootstrapping: the request was a read request but the
+	 *              coordinator node is bootstrapping
+	 *    0x1003    Truncate_error: error during a truncation error.
+	 *    0x1100    Write_timeout: Timeout exception during a write request. The rest
+	 *              of the ERROR message body will be
+	 *                <cl><received><blockfor><writeType>
+	 *              where:
+	 *                <cl> is the [consistency] level of the query having triggered
+	 *                     the exception.
+	 *                <received> is an [int] representing the number of nodes having
+	 *                           acknowledged the request.
+	 *                <blockfor> is the number of replica whose acknowledgement is
+	 *                           required to achieve <cl>.
+	 *                <writeType> is a [string] that describe the type of the write
+	 *                            that timeouted. The value of that string can be one
+	 *                            of:
+	 *                             - "SIMPLE": the write was a non-batched
+	 *                               non-counter write.
+	 *                             - "BATCH": the write was a (logged) batch write.
+	 *                               If this type is received, it means the batch log
+	 *                               has been successfully written (otherwise a
+	 *                               "BATCH_LOG" type would have been send instead).
+	 *                             - "UNLOGGED_BATCH": the write was an unlogged
+	 *                               batch. Not batch log write has been attempted.
+	 *                             - "COUNTER": the write was a counter write
+	 *                               (batched or not).
+	 *                             - "BATCH_LOG": the timeout occured during the
+	 *                               write to the batch log when a (logged) batch
+	 *                               write was requested.
+	 */
+	 alias string WriteType;
+	 string toString(WriteType wt) {
+		final switch (cast(string)wt) {
+			case "SIMPLE":
+				return "SIMPLE: the write was a non-batched non-counter write.";
+			case "BATCH":
+				return "BATCH: the write was a (logged) batch write. If this type is received, it means the batch log has been successfully written (otherwise a \"BATCH_LOG\" type would have been send instead).";
+			case "UNLOGGED_BATCH":
+				return "UNLOGGED_BATCH: the write was an unlogged batch. Not batch log write has been attempted.";
+			case "COUNTER":
+				return "COUNTER: the write was a counter write (batched or not).";
+			case "BATCH_LOG":
+				return "BATCH_LOG: the timeout occured during the write to the batch log when a (logged) batch write was requested.";
+		 }
+	 }
+	 /**    0x1200    Read_timeout: Timeout exception during a read request. The rest
+	 *              of the ERROR message body will be
+	 *                <cl><received><blockfor><data_present>
+	 *              where:
+	 *                <cl> is the [consistency] level of the query having triggered
+	 *                     the exception.
+	 *                <received> is an [int] representing the number of nodes having
+	 *                           answered the request.
+	 *                <blockfor> is the number of replica whose response is
+	 *                           required to achieve <cl>. Please note that it is
+	 *                           possible to have <received> >= <blockfor> if
+	 *                           <data_present> is false. And also in the (unlikely)
+	 *                           case were <cl> is achieved but the coordinator node
+	 *                           timeout while waiting for read-repair
+	 *                           acknowledgement.
+	 *                <data_present> is a single byte. If its value is 0, it means
+	 *                               the replica that was asked for data has not
+	 *                               responded. Otherwise, the value is != 0.
+	 *
+	 *    0x2000    Syntax_error: The submitted query has a syntax error.
+	 *    0x2100    Unauthorized: The logged user doesn't have the right to perform
+	 *              the query.
+	 *    0x2200    Invalid: The query is syntactically correct but invalid.
+	 *    0x2300    Config_error: The query is invalid because of some configuration issue
+	 *    0x2400    Already_exists: The query attempted to create a keyspace or a
+	 *              table that was already existing. The rest of the ERROR message
+	 *              body will be <ks><table> where:
+	 *                <ks> is a [string] representing either the keyspace that
+	 *                     already exists, or the keyspace in which the table that
+	 *                     already exists is.
+	 *                <table> is a [string] representing the name of the table that
+	 *                        already exists. If the query was attempting to create a
+	 *                        keyspace, <table> will be present but will be the empty
+	 *                        string.
+	 *    0x2500    Unprepared: Can be thrown while a prepared statement tries to be
+	 *              executed if the provide prepared statement ID is not known by
+	 *              this host. The rest of the ERROR message body will be [short
+	 *              bytes] representing the unknown ID.
+	 **/
+	 enum Error : ushort {
+		serverError = 0x0000,
+		protocolError = 0x000A,
+		badCredentials = 0x0100,
+		unavailableException = 0x1000,
+		overloaded = 0x1001,
+		isBootstrapping = 0x1002,
+		truncateError = 0x1003,
+		writeTimeout = 0x1100,
+		readTimeout = 0x1200,
+		syntaxError = 0x2000,
+		unauthorized = 0x2100,
+		invalid = 0x2200,
+		configError = 0x2300,
+		alreadyExists = 0x2400,
+		unprepared = 0x2500
+	 }
+
+	 static string toString(Error err)
+	 {
+		switch (err) {
+			case Error.serverError:
+				return "Server error: something unexpected happened. This indicates a server-side bug.";
+			case Error.protocolError:
+				return "Protocol error: some client message triggered a protocol violation (for instance a QUERY message is sent before a STARTUP one has been sent)";
+			case Error.badCredentials:
+				return "Bad credentials: CREDENTIALS request failed because Cassandra did not accept the provided credentials.";
+			case Error.unavailableException:
+				return "Unavailable exception.";
+			case Error.overloaded:
+				return "Overloaded: the request cannot be processed because the coordinator node is overloaded";
+			case Error.isBootstrapping:
+				return "Is_bootstrapping: the request was a read request but the coordinator node is bootstrapping";
+			case Error.truncateError:
+				return "Truncate_error: error during a truncation error.";
+			case Error.writeTimeout:
+				return "Write_timeout: Timeout exception during a write request.";
+			case Error.readTimeout:
+				return "Read_timeout: Timeout exception during a read request.";
+			case Error.syntaxError:
+				return "Syntax_error: The submitted query has a syntax error.";
+			case Error.unauthorized:
+				return "Unauthorized: The logged user doesn't have the right to perform the query.";
+			case Error.invalid:
+				return "Invalid: The query is syntactically correct but invalid.";
+			case Error.configError:
+				return "Config_error: The query is invalid because of some configuration issue.";
+			case Error.alreadyExists:
+				return "Already_exists: The query attempted to create a keyspace or a table that was already existing.";
+			case Error.unprepared:
+				return "Unprepared: Can be thrown while a prepared statement tries to be executed if the provide prepared statement ID is not known by this host.";
+			default:
+				assert(false);
+		}
+	 }
 }
+
+
+// some types
+static assert(int.sizeof == 4, "int is not 32 bits"~ to!string(int.sizeof));
+
 /*
  *                             CQL BINARY PROTOCOL v1
  *
@@ -100,7 +1211,7 @@ unittest {
 /**
  *2. Frame header
  */
-struct FrameHeader {
+private struct FrameHeader {
 
 	/**
 	 *2.1. version
@@ -750,1136 +1861,6 @@ private StringMultiMap readStringMultiMap(TCPConnection s, ref int counter) {
 	return smm;
 }
 
-class Connection {
-	private {
-		TCPConnection sock;
-		string m_host;
-		ushort m_port;
-		string m_usedKeyspace;
-	}
-
-	enum defaultPort = 9042;
-
-	this(string host, ushort port = defaultPort)
-	{
-		m_host = host;
-		m_port = port;
-	}
-
-	void connect() {
-		if (!sock || !sock.connected) {
-			writeln("connecting");
-			sock = connectTCP(m_host, m_port);
-			writeln("connected. doing handshake...");
-			startup();
-			writeln("handshake completed.");
-			m_usedKeyspace = null;
-		}
-	}
-
-	void close() {
-		if (counter > 0) {
-			auto buf = readRawBytes(sock, counter, counter);
-			writeln("buf:", buf);
-		}
-		assert(counter == 0, "Did not complete reading of stream: "~ to!string(counter) ~" bytes left");
-		sock.close();
-		sock = null;
-	}
-
-	void useKeyspace(string name)
-	{
-		if (name == m_usedKeyspace) return;
-		enforceValidIdentifier(name);
-		query(`USE `~name, Consistency.any);
-		m_usedKeyspace = name;
-	}
-
-
-
-	private void write(TCPConnection s, Appender!(ubyte[]) appender) {
-		//print(appender.data);
-		s.write(appender.data);
-		s.flush();
-	}
-
-
-	//vvvvvvvvvvvvvvvvvvvvv CQL Implementation vvvvvvvvvvvvvvvvvv
-	int counter; // keeps track of data left after each read
-
-	bool compression_enabled_;
-	bool tracing_enabled_;
-
-	byte streamid_;
-	FrameHeader.Version transport_version_; // this is just the protocol version number
-	/// Make a FrameHeader corresponding to this Stream
-	FrameHeader makeHeader(FrameHeader.OpCode opcode) {
-		FrameHeader fh;
-		switch (transport_version_) {
-			case 1:
-				fh.version_ = FrameHeader.Version.V1Request;
-				break;
-			case 2:
-				fh.version_ = FrameHeader.Version.V2Request;
-				break;
-			default:
-				assert(0, "invalid transport_version");
-		}
-		if (compression_enabled_)
-			fh.compress = true;
-		if (tracing_enabled_)
-			fh.trace = true;
-		fh.streamid = streamid_;
-		fh.opcode = opcode;
-		return fh;
-	}
-
-	/**4. Messages
-	 *
-	 *4.1. Requests
-	 *
-	 *  Note that outside of their normal responses (described below), all requests
-	 *  can get an ERROR message (Section 4.2.1) as response.
-	 *
-	 *4.1.1. STARTUP
-	 *
-	 *  Initialize the connection. The server will respond by either a READY message
-	 *  (in which case the connection is ready for queries) or an AUTHENTICATE message
-	 *  (in which case credentials will need to be provided using CREDENTIALS).
-	 *
-	 *  This must be the first message of the connection, except for OPTIONS that can
-	 *  be sent before to find out the options supported by the server. Once the
-	 *  connection has been initialized, a client should not send any more STARTUP
-	 *  message.
-	 *
-	 *  The body is a [string map] of options. Possible options are:
-	 *    - "CQL_VERSION": the version of CQL to use. This option is mandatory and
-	 *      currenty, the only version supported is "3.0.0". Note that this is
-	 *      different from the protocol version.
-	 *    - "COMPRESSION": the compression algorithm to use for frames (See section 5).
-	 *      This is optional, if not specified no compression will be used.
-	 */
-	 private void startup(string compression_algorithm = "") {
-		StringMap data;
-		data["CQL_VERSION"] = "3.0.0";
-		if (compression_algorithm.length > 0)
-			data["COMPRESSION"] = compression_algorithm;
-
-		auto fh = makeHeader(FrameHeader.OpCode.startup);
-
-		auto bytebuf = appender!(ubyte[])();
-		bytebuf.append(data);
-		fh.length = bytebuf.getIntLength();
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		write(sock, bytebuf);
-
-		fh = readFrameHeader(sock, counter);
-		if (fh.isAUTHENTICATE) {
-			fh = authenticate(fh);
-		}
-		throwOnError(fh);
-	}
-
-	private FrameHeader authenticate(FrameHeader fh) {
-		auto authenticatorname = readAuthenticate(fh);
-		auto authenticator = getAuthenticator(authenticatorname);
-		sendCredentials(authenticator.getCredentials());
-		throw new Exception("NotImplementedException Authentication: "~ authenticatorname);
-	}
-
-
-	/**
-	 *4.1.2. CREDENTIALS
-	 *
-	 *  Provides credentials information for the purpose of identification. This
-	 *  message comes as a response to an AUTHENTICATE message from the server, but
-	 *  can be use later in the communication to change the authentication
-	 *  information.
-	 *
-	 *  The body is a list of key/value informations. It is a [short] n, followed by n
-	 *  pair of [string]. These key/value pairs are passed as is to the Cassandra
-	 *  IAuthenticator and thus the detail of which informations is needed depends on
-	 *  that authenticator.
-	 *
-	 *  The response to a CREDENTIALS is a READY message (or an ERROR message).
-	 */
-	private void sendCredentials(StringMap data) {
-		auto fh = makeHeader(FrameHeader.OpCode.credentials);
-		auto bytebuf = appender!(ubyte[])();
-		bytebuf.append(data);
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		write(sock, bytebuf);
-
-		assert(false, "todo: read credentials response");
-	}
-
-	/**
-	 *4.1.3. OPTIONS
-	 *
-	 *  Asks the server to return what STARTUP options are supported. The body of an
-	 *  OPTIONS message should be empty and the server will respond with a SUPPORTED
-	 *  message.
-	 */
-	StringMultiMap requestOptions() {
-		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.options);
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		fh = readFrameHeader(sock, counter);
-		if (!fh.isSUPPORTED) {
-			throw new Exception("CQLProtocolException, Unknown response to OPTIONS request");
-		}
-		return readSupported(fh);
-	}
-
-	 /**
-	 *4.1.4. QUERY
-	 *
-	 *  Performs a CQL query. The body of the message consists of a CQL query as a [long
-	 *  string] followed by the [consistency] for the operation.
-	 *
-	 *  Note that the consistency is ignored by some queries (USE, CREATE, ALTER,
-	 *  TRUNCATE, ...).
-	 *
-	 *  The server will respond to a QUERY message with a RESULT message, the content
-	 *  of which depends on the query.
-	 */
-	Result query(string q, Consistency consistency) {
-		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.query);
-		auto bytebuf = appender!(ubyte[])();
-		writeln("-----------");
-		bytebuf.appendLongString(q);
-		//print(bytebuf.data);
-		writeln("-----------");
-		bytebuf.append(consistency);
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		write(sock, bytebuf);
-
-		fh = readFrameHeader(sock, counter);
-		throwOnError(fh);
-		return new Result(fh);
-	}
-	bool insert(string q, Consistency consistency = Consistency.any) {
-		connect();
-		assert(q[0.."insert".length]=="INSERT");
-		auto res = query(q, consistency);
-		if (res.kind == Result.Kind.void_) {
-			return true;
-		}
-		throw new Exception("CQLProtocolException: expected void response to insert");
-	}
-	Result select(string q, Consistency consistency = Consistency.quorum) {
-		connect();
-		import std.string : icmp;
-		assert(icmp(q[0.."select".length], "SELECT")==0);
-		return query(q, consistency);
-	}
-
-	 /**
-	 *4.1.5. PREPARE
-	 *
-	 *  Prepare a query for later execution (through EXECUTE). The body consists of
-	 *  the CQL query to prepare as a [long string].
-	 *
-	 *  The server will respond with a RESULT message with a `prepared` kind (0x0004,
-	 *  see Section 4.2.5).
-	 */
-	PreparedStatement prepare(string q) {
-		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.prepare);
-		auto bytebuf = appender!(ubyte[])();
-		writeln("---------=-");
-		bytebuf.appendLongString(q);
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		write(sock, bytebuf);
-		writeln("---------=-");
-
-
-
-		fh = readFrameHeader(sock, counter);
-		throwOnError(fh);
-		if (!fh.isRESULT) {
-			throw new Exception("CQLProtocolException, Unknown response to PREPARE command");
-		}
-		return new PreparedStatement(fh);
-	}
-
-	/**
-	 *4.1.6. EXECUTE
-	 *
-	 *  Executes a prepared query. The body of the message must be:
-	 *    <id><n><value_1>....<value_n><consistency>
-	 *  where:
-	 *    - <id> is the prepared query ID. It's the [short bytes] returned as a
-	 *      response to a PREPARE message.
-	 *    - <n> is a [short] indicating the number of following values.
-	 *    - <value_1>...<value_n> are the [bytes] to use for bound variables in the
-	 *      prepared query.
-	 *    - <consistency> is the [consistency] level for the operation.
-	 *
-	 *  Note that the consistency is ignored by some (prepared) queries (USE, CREATE,
-	 *  ALTER, TRUNCATE, ...).
-	 *
-	 *  The response from the server will be a RESULT message.
-	 */
-	private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, Args args) {
-		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.execute);
-		auto bytebuf = appender!(ubyte[])();
-		writeln("-----=----=-");
-		bytebuf.appendShortBytes(preparedStatementID);
-		assert(args.length < short.max);
-		bytebuf.append(cast(short)args.length);
-		foreach (arg; args) {
-			bytebuf.appendIntBytes(arg);
-		}
-		bytebuf.append(consistency);
-
-		fh.length = bytebuf.getIntLength;
-		write(sock, appender!(ubyte[])().append(fh.bytes));
-		writeln("Sending: ", bytebuf.data);
-		write(sock, bytebuf);
-		writeln("-----=----=-");
-
-		fh = readFrameHeader(sock, counter);
-		throwOnError(fh);
-		if (!fh.isRESULT) {
-			throw new Exception("CQLProtocolException, Unknown response to Execute command: "~ to!string(fh.opcode));
-		}
-		return new Result(fh);
-	}
-
-	/**
-	 *4.1.7. REGISTER
-	 *
-	 *  Register this connection to receive some type of events. The body of the
-	 *  message is a [string list] representing the event types to register to. See
-	 *  section 4.2.6 for the list of valid event types.
-	 *
-	 *  The response to a REGISTER message will be a READY message.
-	 *
-	 *  Please note that if a client driver maintains multiple connections to a
-	 *  Cassandra node and/or connections to multiple nodes, it is advised to
-	 *  dedicate a handful of connections to receive events, but to *not* register
-	 *  for events on all connections, as this would only result in receiving
-	 *  multiple times the same event messages, wasting bandwidth.
-	 */
-	void listen(Event events...) {
-		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.register);
-		auto bytebuf = appender!(ubyte[])();
-		auto tmpbuf = appender!(ubyte[])();
-		tmpbuf.append(events);
-		fh.length = tmpbuf.getIntLength;
-		bytebuf.put(fh.bytes);
-		bytebuf.append(tmpbuf);
-		write(sock, bytebuf);
-
-		fh = readFrameHeader(sock, counter);
-		if (!fh.isREADY) {
-			throw new Exception("CQLProtocolException, Unknown response to REGISTER command");
-		}
-		assert(false, "Untested: setup of event listening");
-	}
-
-	/**
-	 *4.2. Responses
-	 *
-	 *  This section describes the content of the frame body for the different
-	 *  responses. Please note that to make room for future evolution, clients should
-	 *  support extra informations (that they should simply discard) to the one
-	 *  described in this document at the end of the frame body.
-	 *
-	 *4.2.1. ERROR
-	 *
-	 *  Indicates an error processing a request. The body of the message will be an
-	 *  error code ([int]) followed by a [string] error message. Then, depending on
-	 *  the exception, more content may follow. The error codes are defined in
-	 *  Section 7, along with their additional content if any.
-	 */
-	protected void throwOnError(FrameHeader fh) {
-		if (!fh.isERROR) return;
-		int tmp;
-		Error code;
-		readIntNotNULL(tmp, sock, counter);
-		code = cast(Error)tmp;
-
-		auto msg = readShortString(sock,counter);
-
-		auto spec_msg = toString(code);
-
-		final switch (code) {
-			case Error.serverError:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.protocolError:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.badCredentials:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.unavailableException:
-				auto cs = cast(Consistency)readShort(sock,counter);
-				auto required = readIntNotNULL(tmp, sock, counter);
-				auto alive = readIntNotNULL(tmp, sock, counter);
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ .to!string(cs) ~" required:"~ to!string(required) ~" alive:"~ to!string(alive));
-			case Error.overloaded:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.isBootstrapping:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.truncateError:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.writeTimeout:
-				auto cl = cast(Consistency)readShort(sock,counter);
-				auto received = readIntNotNULL(tmp, sock, counter);
-				auto blockfor = readIntNotNULL(tmp, sock, counter); // WARN: the type for blockfor does not seem to be in the spec!!!
-				auto writeType = cast(WriteType)readShortString(sock, counter);
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ to!string(cl) ~" received:"~ to!string(received) ~" blockfor:"~ to!string(blockfor) ~" writeType:"~ toString(writeType));
-			case Error.readTimeout:
-				auto cl = cast(Consistency)readShort(sock,counter);
-				auto received = readIntNotNULL(tmp, sock, counter);
-				auto blockfor = readIntNotNULL(tmp, sock, counter); // WARN: the type for blockfor does not seem to be in the spec!!!
-				auto data_present = readByte(sock, counter);
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ to!string(cl) ~" received:"~ to!string(received) ~" blockfor:"~ to!string(blockfor) ~" data_present:"~ (data_present==0x00?"false":"true"));
-			case Error.syntaxError:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.unauthorized:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.invalid:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.configError:
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.alreadyExists:
-				auto ks = readShortString(sock,counter);
-				auto table = readShortString(sock,counter);
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~", keyspace:"~ks ~", table:"~ table );
-			case Error.unprepared:
-				auto unknown_id = readShort(sock,counter);
-				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~":"~ to!string(unknown_id));
-		}
-	}
-
-	 /*
-	 *4.2.2. READY
-	 *
-	 *  Indicates that the server is ready to process queries. This message will be
-	 *  sent by the server either after a STARTUP message if no authentication is
-	 *  required, or after a successful CREDENTIALS message.
-	 *
-	 *  The body of a READY message is empty.
-	 *
-	 *
-	 *4.2.3. AUTHENTICATE
-	 *
-	 *  Indicates that the server require authentication. This will be sent following
-	 *  a STARTUP message and must be answered by a CREDENTIALS message from the
-	 *  client to provide authentication informations.
-	 *
-	 *  The body consists of a single [string] indicating the full class name of the
-	 *  IAuthenticator in use.
-	 */
-	protected string readAuthenticate(FrameHeader fh) {
-		assert(fh.isAUTHENTICATE);
-		return readShortString(sock, counter);
-	}
-
-	/**
-	 *4.2.4. SUPPORTED
-	 *
-	 *  Indicates which startup options are supported by the server. This message
-	 *  comes as a response to an OPTIONS message.
-	 *
-	 *  The body of a SUPPORTED message is a [string multimap]. This multimap gives
-	 *  for each of the supported STARTUP options, the list of supported values.
-	 */
-	protected StringMultiMap readSupported(FrameHeader fh) {
-		return readStringMultiMap(sock, counter);
-	}
-
-	/**
-	 *4.2.5. RESULT
-	 *
-	 *  The result to a query (QUERY, PREPARE or EXECUTE messages).
-	 *
-	 *  The first element of the body of a RESULT message is an [int] representing the
-	 *  `kind` of result. The rest of the body depends on the kind. The kind can be
-	 *  one of:
-	 *    0x0001    Void: for results carrying no information.
-	 *    0x0002    Rows: for results to select queries, returning a set of rows.
-	 *    0x0003    Set_keyspace: the result to a `use` query.
-	 *    0x0004    Prepared: result to a PREPARE message.
-	 *    0x0005    Schema_change: the result to a schema altering query.
-	 *
-	 *  The body for each kind (after the [int] kind) is defined below.
-	 */
-	class Result {
-		FrameHeader fh;
-		private Kind kind_;
-		Kind kind() { return kind_; }
-
-		this(FrameHeader fh) {
-			this.fh = fh;
-			int tmp;
-			kind_ = cast(Kind)readIntNotNULL(tmp, sock, counter);
-			final switch (kind_) {
-				case Kind.void_:
-					readVoid(fh); break;
-				case Kind.rows:
-					readRows(fh); break;
-				case Kind.setKeyspace:
-					readSet_keyspace(fh); break;
-				case Kind.prepared:
-					readPrepared(fh); break;
-				case Kind.schemaChange:
-					readSchema_change(fh); break;
-			}
-		}
-
-		auto rows() {
-			assert(kind_ == Kind.rows);
-			return rows_;
-		}
-
-		enum Kind : short {
-			void_ = 0x0001,
-			rows = 0x0002,
-			setKeyspace = 0x0003,
-			prepared = 0x0004,
-			schemaChange = 0x0005
-		}
-		/**
-		 *4.2.5.1. Void
-		 *
-		 *  The rest of the body for a Void result is empty. It indicates that a query was
-		 *  successful without providing more information.
-		 */
-		void readVoid(FrameHeader fh) {
-			assert(kind_ == Kind.void_);
-		}
-		/**
-		 *4.2.5.2. Rows
-		 *
-		 *  Indicates a set of rows. The rest of body of a Rows result is:
-		 *    <metadata><rows_count><rows_content>
-		 */
-		MetaData metadata;
-		ubyte[][][] rows_;
-		auto readRows(FrameHeader fh) {
-			assert(kind_ == Kind.rows || kind_ == Kind.prepared);
-			metadata = readRowMetaData(fh);
-			// <rows_count> is read within readRowsContent
-			rows_ = readRowsContent(fh, metadata);
-		}
-
-		/**  where:
-		 *    - <metadata> is composed of:
-		 *        <flags><columns_count><global_table_spec>?<col_spec_1>...<col_spec_n>
-		 *      where:
-		 *        - <flags> is an [int]. The bits of <flags> provides information on the
-		 *          formatting of the remaining informations. A flag is set if the bit
-		 *          corresponding to its `mask` is set. Supported flags are, given there
-		 *          mask:
-		 *            0x0001    Global_tables_spec: if set, only one table spec (keyspace
-		 *                      and table name) is provided as <global_table_spec>. If not
-		 *                      set, <global_table_spec> is not present.
-		 *        - <columns_count> is an [int] representing the number of columns selected
-		 *          by the query this result is of. It defines the number of <col_spec_i>
-		 *          elements in and the number of element for each row in <rows_content>.
-		 *        - <global_table_spec> is present if the Global_tables_spec is set in
-		 *          <flags>. If present, it is composed of two [string] representing the
-		 *          (unique) keyspace name and table name the columns return are of.
-		 */
-		struct MetaData {
-			int flags; enum GLOBAL_TABLES_SPEC = 0x0001; @property bool hasGlobalTablesSpec() { return flags & MetaData.GLOBAL_TABLES_SPEC ? true : false; }
-			int columns_count;
-			string[2] global_table_spec;
-			ColumnSpecification[] column_specs;
-		}
-		MetaData readRowMetaData(FrameHeader fh) {
-			auto md = MetaData();
-			md.flags.readIntNotNULL(sock, counter);
-			md.columns_count.readIntNotNULL(sock, counter);
-			if (md.flags & MetaData.GLOBAL_TABLES_SPEC) {
-				md.global_table_spec[0] = readShortString(sock, counter);
-				md.global_table_spec[1] = readShortString(sock, counter);
-			}
-			md.column_specs = readColumnSpecifications(md.flags & MetaData.GLOBAL_TABLES_SPEC, md.columns_count);
-			writeln("got spec: ", md);
-			return md;
-		}
-
-		/**       - <col_spec_i> specifies the columns returned in the query. There is
-		 *          <column_count> such column specification that are composed of:
-		 *            (<ksname><tablename>)?<column_name><type>
-		 *          The initial <ksname> and <tablename> are two [string] are only present
-		 *          if the Global_tables_spec flag is not set. The <column_name> is a
-		 *          [string] and <type> is an [option] that correspond to the column name
-		 *          and type. The option for <type> is either a native type (see below),
-		 *          in which case the option has no value, or a 'custom' type, in which
-		 *          case the value is a [string] representing the full qualified class
-		 *          name of the type represented. Valid option ids are:
-		 *            0x0000    Custom: the value is a [string], see above.
-		 *            0x0001    Ascii
-		 *            0x0002    Bigint
-		 *            0x0003    Blob
-		 *            0x0004    Boolean
-		 *            0x0005    Counter
-		 *            0x0006    Decimal
-		 *            0x0007    Double
-		 *            0x0008    Float
-		 *            0x0009    Int
-		 *            0x000A    Text
-		 *            0x000B    Timestamp
-		 *            0x000C    Uuid
-		 *            0x000D    Varchar
-		 *            0x000E    Varint
-		 *            0x000F    Timeuuid
-		 *            0x0010    Inet
-		 *            0x0020    List: the value is an [option], representing the type
-		 *                            of the elements of the list.
-		 *            0x0021    Map: the value is two [option], representing the types of the
-		 *                           keys and values of the map
-		 *            0x0022    Set: the value is an [option], representing the type
-		 *                            of the elements of the set
-		 */
-		Option* readOption(TCPConnection s, ref int counter) {
-			auto ret = new Option();
-			ret.id = cast(Option.Type)readShort(s, counter);
-			final switch (ret.id) {
-				case Option.Type.custom:
-					ret.string_value = readShortString(s, counter);
-					break;
-				case Option.Type.ascii:
-					break;
-				case Option.Type.bigInt:
-					break;
-				case Option.Type.blob:
-					break;
-				case Option.Type.boolean:
-					break;
-				case Option.Type.counter:
-					break;
-				case Option.Type.decimal:
-					break;
-				case Option.Type.double_:
-					break;
-				case Option.Type.float_:
-					break;
-				case Option.Type.int_:
-					break;
-				case Option.Type.text:
-					break;
-				case Option.Type.timestamp:
-					break;
-				case Option.Type.uuid:
-					break;
-				case Option.Type.varChar:
-					break;
-				case Option.Type.varInt:
-					break;
-				case Option.Type.timeUUID:
-					break;
-				case Option.Type.inet:
-					break;
-				case Option.Type.list:
-					ret.option_value = readOption(s, counter);
-					break;
-				case Option.Type.map:
-					ret.key_values_option_value[0] = readOption(s, counter);
-					ret.key_values_option_value[1] = readOption(s, counter);
-					break;
-				case Option.Type.set:
-					ret.option_value = readOption(s, counter);
-					break;
-			}
-			return ret;
-		}
-
-		struct ColumnSpecification {
-			string ksname;
-			string tablename;
-
-			string name;
-			Option type;
-		}
-		protected auto readColumnSpecification(bool hasGlobalTablesSpec) {
-			ColumnSpecification ret;
-			if (!hasGlobalTablesSpec) {
-				ret.ksname = readShortString(sock, counter);
-				ret.tablename = readShortString(sock, counter);
-			}
-			ret.name = readShortString(sock, counter);
-			ret.type = *readOption(sock, counter);
-			return ret;
-		}
-		protected auto readColumnSpecifications(bool hasGlobalTablesSpec, int column_count) {
-			ColumnSpecification[] ret;
-			for (int i=0; i<column_count; i++) {
-				ret ~= readColumnSpecification(hasGlobalTablesSpec);
-			}
-			return ret;
-		}
-
-		/**    - <rows_count> is an [int] representing the number of rows present in this
-		 *      result. Those rows are serialized in the <rows_content> part.
-		 *    - <rows_content> is composed of <row_1>...<row_m> where m is <rows_count>.
-		 *      Each <row_i> is composed of <value_1>...<value_n> where n is
-		 *      <columns_count> and where <value_j> is a [bytes] representing the value
-		 *      returned for the jth column of the ith row. In other words, <rows_content>
-		 *      is composed of (<rows_count> * <columns_count>) [bytes].
-		 */
-		protected auto readRowsContent(FrameHeader fh, MetaData md) {
-			int count;
-			auto tmp = readIntNotNULL(count, sock, counter);
-			ReturnType!readRowContent[] ret;
-			//log("reading %d rows", count);
-			for (int i=0; i<count; i++) {
-				ret ~= readRowContent(fh, md);
-			}
-			return ret;
-		}
-		protected auto readRowContent(FrameHeader fh, MetaData md) {
-			ubyte[][] ret;
-			for (int i=0; i<md.columns_count; i++) {
-				//log("reading index[%d], %s", i, md.column_specs[i]);
-				final switch (md.column_specs[i].type.id) {
-					case Option.Type.custom:
-						log("warning column %s has custom type", md.column_specs[i].name);
-						ret ~= readIntBytes(sock, counter);
-						break;
-					case Option.Type.counter:
-						ret ~= readIntBytes(sock, counter);
-						throw new Exception("Read Counter Type has not been checked this is what we got: "~ cast(string)ret[$-1]);
-						//break;
-					case Option.Type.decimal:
-						auto twobytes = readRawBytes(sock, counter, 2);
-						if (twobytes == [0xff,0xff]) {
-							twobytes = readRawBytes(sock, counter, 2);
-							ret ~= null;
-							break;
-						}
-						if (twobytes[0]==0x01 && twobytes[1]==0x01) {
-							ret ~= readIntBytes(sock, counter);
-						} else {
-							auto writer = appender!string();
-							formattedWrite(writer, "%s", twobytes);
-							throw new Exception("New kind of decimal encountered"~ writer.data);
-						}
-						break;
-					case Option.Type.boolean:
-						ret ~= readRawBytes(sock, counter, int.sizeof);
-						break;
-
-					case Option.Type.ascii:
-						goto case;
-					case Option.Type.bigInt:
-						goto case;
-					case Option.Type.blob:
-						goto case;
-					case Option.Type.double_:
-						goto case;
-					case Option.Type.float_:
-						goto case;
-					case Option.Type.int_:
-						goto case;
-					case Option.Type.text:
-						goto case;
-					case Option.Type.timestamp:
-						goto case;
-					case Option.Type.uuid:
-						goto case;
-					case Option.Type.varChar:
-						goto case;
-					case Option.Type.varInt:
-						goto case;
-					case Option.Type.timeUUID:
-						goto case;
-					case Option.Type.inet:
-						goto case;
-					case Option.Type.list:
-						goto case;
-					case Option.Type.map:
-						goto case;
-					case Option.Type.set:
-						ret ~= readIntBytes(sock, counter);
-						break;
-
-				}
-			}
-			return ret;
-		}
-
-		/**4.2.5.3. Set_keyspace
-		 *
-		 *  The result to a `use` query. The body (after the kind [int]) is a single
-		 *  [string] indicating the name of the keyspace that has been set.
-		 */
-		protected string readSet_keyspace(FrameHeader fh) {
-			assert(kind_ is Kind.setKeyspace);
-			return readShortString(sock, counter);
-		}
-
-		/**
-		 *4.2.5.4. Prepared
-		 *
-		 *  The result to a PREPARE message. The rest of the body of a Prepared result is:
-		 *    <id><metadata>
-		 *  where:
-		 *    - <id> is [short bytes] representing the prepared query ID.
-		 *    - <metadata> is defined exactly as for a Rows RESULT (See section 4.2.5.2).
-		 *
-		 *  Note that prepared query ID return is global to the node on which the query
-		 *  has been prepared. It can be used on any connection to that node and this
-		 *  until the node is restarted (after which the query must be reprepared).
-		 */
-		protected void readPrepared(FrameHeader fh) {
-			assert(false, "Not a Prepare Result class type");
-		}
-
-		/**
-		 *4.2.5.5. Schema_change
-		 *
-		 *  The result to a schema altering query (creation/update/drop of a
-		 *  keyspace/table/index). The body (after the kind [int]) is composed of 3
-		 *  [string]:
-		 *    <change><keyspace><table>
-		 *  where:
-		 *    - <change> describe the type of change that has occured. It can be one of
-		 *      "CREATED", "UPDATED" or "DROPPED".
-		 *    - <keyspace> is the name of the affected keyspace or the keyspace of the
-		 *      affected table.
-		 *    - <table> is the name of the affected table. <table> will be empty (i.e.
-		 *      the empty string "") if the change was affecting a keyspace and not a
-		 *      table.
-		 *
-		 *  Note that queries to create and drop an index are considered as change
-		 *  updating the table the index is on.
-		 */
-		enum Change : string {
-			created = "CREATED",
-			updated = "UPDATED",
-			dropped = "DROPPED"
-		}
-		Change lastChange_; string lastchange() { return lastChange_; }
-		string currentKeyspace_; string keyspace() { return currentKeyspace_; }
-		string currentTable_; string table() { return currentTable_; }
-		protected void readSchema_change(FrameHeader fh) {
-			assert(kind_ is Kind.schemaChange);
-
-			lastChange_ = cast(Change)readShortString(sock, counter);
-
-			currentKeyspace_ = readShortString(sock, counter);
-			currentTable_ = readShortString(sock, counter);
-		}
-	}
-
-	class PreparedStatement : Result {
-		ubyte[] id;
-		Consistency consistency = Consistency.any;
-
-		this(FrameHeader fh) {
-			super(fh);
-			if (kind != Result.Kind.prepared) {
-				throw new Exception("CQLProtocolException, Unknown result type for PREPARE command");
-			}
-		}
-
-		/// See section 4.2.5.4.
-		protected override void readPrepared(FrameHeader fh) {
-			assert(kind_ is Kind.prepared);
-			id = readShortBytes(sock, counter);
-			metadata = readRowMetaData(fh);
-		}
-
-		Result execute(Args...)(Args args) {
-			return Connection.execute(id, consistency, args);
-		}
-
-		override
-		string toString() {
-			return "PreparedStatement("~id.hex~")";
-		}
-	}
-
-	/**
-	 *4.2.6. EVENT
-	 *
-	 *  And event pushed by the server. A client will only receive events for the
-	 *  type it has REGISTER to. The body of an EVENT message will start by a
-	 *  [string] representing the event type. The rest of the message depends on the
-	 *  event type. The valid event types are:
-	 *    - "TOPOLOGY_CHANGE": events related to change in the cluster topology.
-	 *      Currently, events are sent when new nodes are added to the cluster, and
-	 *      when nodes are removed. The body of the message (after the event type)
-	 *      consists of a [string] and an [inet], corresponding respectively to the
-	 *      type of change ("NEW_NODE" or "REMOVED_NODE") followed by the address of
-	 *      the new/removed node.
-	 *    - "STATUS_CHANGE": events related to change of node status. Currently,
-	 *      up/down events are sent. The body of the message (after the event type)
-	 *      consists of a [string] and an [inet], corresponding respectively to the
-	 *      type of status change ("UP" or "DOWN") followed by the address of the
-	 *      concerned node.
-	 *    - "SCHEMA_CHANGE": events related to schema change. The body of the message
-	 *      (after the event type) consists of 3 [string] corresponding respectively
-	 *      to the type of schema change ("CREATED", "UPDATED" or "DROPPED"),
-	 *      followed by the name of the affected keyspace and the name of the
-	 *      affected table within that keyspace. For changes that affect a keyspace
-	 *      directly, the table name will be empty (i.e. the empty string "").
-	 *
-	 *  All EVENT message have a streamId of -1 (Section 2.3).
-	 *
-	 *  Please note that "NEW_NODE" and "UP" events are sent based on internal Gossip
-	 *  communication and as such may be sent a short delay before the binary
-	 *  protocol server on the newly up node is fully started. Clients are thus
-	 *  advise to wait a short time before trying to connect to the node (1 seconds
-	 *  should be enough), otherwise they may experience a connection refusal at
-	 *  first.
-	 */
-	enum Event : string {
-		topologyChange = "TOPOLOGY_CHANGE",
-		statusChange = "STATUS_CHANGE",
-		schemaChange = "SCHEMA_CHANGE",
-		newNode = "NEW_NODE",
-		up = "UP"
-	}
-	protected void readEvent(FrameHeader fh) {
-		assert(fh.isEVENT);
-	}
-	/*void writeEvents(Appender!(ubyte[]) appender, Event e...) {
-		appender.append(e);
-	}*/
-
-
-	/**5. Compression
-	 *
-	 *  Frame compression is supported by the protocol, but then only the frame body
-	 *  is compressed (the frame header should never be compressed).
-	 *
-	 *  Before being used, client and server must agree on a compression algorithm to
-	 *  use, which is done in the STARTUP message. As a consequence, a STARTUP message
-	 *  must never be compressed.  However, once the STARTUP frame has been received
-	 *  by the server can be compressed (including the response to the STARTUP
-	 *  request). Frame do not have to be compressed however, even if compression has
-	 *  been agreed upon (a server may only compress frame above a certain size at its
-	 *  discretion). A frame body should be compressed if and only if the compressed
-	 *  flag (see Section 2.2) is set.
-	 */
-
-	/**
-	 *6. Collection types
-	 *
-	 *  This section describe the serialization format for the collection types:
-	 *  list, map and set. This serialization format is both useful to decode values
-	 *  returned in RESULT messages but also to encode values for EXECUTE ones.
-	 *
-	 *  The serialization formats are:
-	 *     List: a [short] n indicating the size of the list, followed by n elements.
-	 *           Each element is [short bytes] representing the serialized element
-	 *           value.
-	 */
-	protected auto readList(T)(FrameHeader fh) {
-		auto size = readShort(fh);
-		T[] ret;
-		foreach (i; 0..size) {
-			ret ~= readBytes!T(sock, counter);
-		}
-		return ret;
-
-	}
-
-	/**     Map: a [short] n indicating the size of the map, followed by n entries.
-	 *          Each entry is composed of two [short bytes] representing the key and
-	 *          the value of the entry map.
-	 */
-	protected auto readMap(T,U)(FrameHeader fh) {
-		auto size = readShort(fh);
-		T[U] ret;
-		foreach (i; 0..size) {
-			ret[readShortBytes!T(sock, counter)] = readShortBytes!U(sock,counter);
-
-		}
-		return ret;
-	}
-
-	/**     Set: a [short] n indicating the size of the set, followed by n elements.
-	 *          Each element is [short bytes] representing the serialized element
-	 *          value.
-	 */
-	protected auto readSet(T)(FrameHeader fh) {
-		auto size = readShort(fh);
-		T[] ret;
-		foreach (i; 0..size) {
-			ret[] ~= readBytes!T(sock, counter);
-
-		}
-		return ret;
-	}
-
-	/**
-	 *7. Error codes
-	 *
-	 *  The supported error codes are described below:
-	 *    0x0000    Server error: something unexpected happened. This indicates a
-	 *              server-side bug.
-	 *    0x000A    Protocol error: some client message triggered a protocol
-	 *              violation (for instance a QUERY message is sent before a STARTUP
-	 *              one has been sent)
-	 *    0x0100    Bad credentials: CREDENTIALS request failed because Cassandra
-	 *              did not accept the provided credentials.
-	 *
-	 *    0x1000    Unavailable exception. The rest of the ERROR message body will be
-	 *                <cl><required><alive>
-	 *              where:
-	 *                <cl> is the [consistency] level of the query having triggered
-	 *                     the exception.
-	 *                <required> is an [int] representing the number of node that
-	 *                           should be alive to respect <cl>
-	 *                <alive> is an [int] representing the number of replica that
-	 *                        were known to be alive when the request has been
-	 *                        processed (since an unavailable exception has been
-	 *                        triggered, there will be <alive> < <required>)
-	 *    0x1001    Overloaded: the request cannot be processed because the
-	 *              coordinator node is overloaded
-	 *    0x1002    Is_bootstrapping: the request was a read request but the
-	 *              coordinator node is bootstrapping
-	 *    0x1003    Truncate_error: error during a truncation error.
-	 *    0x1100    Write_timeout: Timeout exception during a write request. The rest
-	 *              of the ERROR message body will be
-	 *                <cl><received><blockfor><writeType>
-	 *              where:
-	 *                <cl> is the [consistency] level of the query having triggered
-	 *                     the exception.
-	 *                <received> is an [int] representing the number of nodes having
-	 *                           acknowledged the request.
-	 *                <blockfor> is the number of replica whose acknowledgement is
-	 *                           required to achieve <cl>.
-	 *                <writeType> is a [string] that describe the type of the write
-	 *                            that timeouted. The value of that string can be one
-	 *                            of:
-	 *                             - "SIMPLE": the write was a non-batched
-	 *                               non-counter write.
-	 *                             - "BATCH": the write was a (logged) batch write.
-	 *                               If this type is received, it means the batch log
-	 *                               has been successfully written (otherwise a
-	 *                               "BATCH_LOG" type would have been send instead).
-	 *                             - "UNLOGGED_BATCH": the write was an unlogged
-	 *                               batch. Not batch log write has been attempted.
-	 *                             - "COUNTER": the write was a counter write
-	 *                               (batched or not).
-	 *                             - "BATCH_LOG": the timeout occured during the
-	 *                               write to the batch log when a (logged) batch
-	 *                               write was requested.
-	 */
-	 alias string WriteType;
-	 string toString(WriteType wt) {
-		final switch (cast(string)wt) {
-			case "SIMPLE":
-				return "SIMPLE: the write was a non-batched non-counter write.";
-			case "BATCH":
-				return "BATCH: the write was a (logged) batch write. If this type is received, it means the batch log has been successfully written (otherwise a \"BATCH_LOG\" type would have been send instead).";
-			case "UNLOGGED_BATCH":
-				return "UNLOGGED_BATCH: the write was an unlogged batch. Not batch log write has been attempted.";
-			case "COUNTER":
-				return "COUNTER: the write was a counter write (batched or not).";
-			case "BATCH_LOG":
-				return "BATCH_LOG: the timeout occured during the write to the batch log when a (logged) batch write was requested.";
-		 }
-	 }
-	 /**    0x1200    Read_timeout: Timeout exception during a read request. The rest
-	 *              of the ERROR message body will be
-	 *                <cl><received><blockfor><data_present>
-	 *              where:
-	 *                <cl> is the [consistency] level of the query having triggered
-	 *                     the exception.
-	 *                <received> is an [int] representing the number of nodes having
-	 *                           answered the request.
-	 *                <blockfor> is the number of replica whose response is
-	 *                           required to achieve <cl>. Please note that it is
-	 *                           possible to have <received> >= <blockfor> if
-	 *                           <data_present> is false. And also in the (unlikely)
-	 *                           case were <cl> is achieved but the coordinator node
-	 *                           timeout while waiting for read-repair
-	 *                           acknowledgement.
-	 *                <data_present> is a single byte. If its value is 0, it means
-	 *                               the replica that was asked for data has not
-	 *                               responded. Otherwise, the value is != 0.
-	 *
-	 *    0x2000    Syntax_error: The submitted query has a syntax error.
-	 *    0x2100    Unauthorized: The logged user doesn't have the right to perform
-	 *              the query.
-	 *    0x2200    Invalid: The query is syntactically correct but invalid.
-	 *    0x2300    Config_error: The query is invalid because of some configuration issue
-	 *    0x2400    Already_exists: The query attempted to create a keyspace or a
-	 *              table that was already existing. The rest of the ERROR message
-	 *              body will be <ks><table> where:
-	 *                <ks> is a [string] representing either the keyspace that
-	 *                     already exists, or the keyspace in which the table that
-	 *                     already exists is.
-	 *                <table> is a [string] representing the name of the table that
-	 *                        already exists. If the query was attempting to create a
-	 *                        keyspace, <table> will be present but will be the empty
-	 *                        string.
-	 *    0x2500    Unprepared: Can be thrown while a prepared statement tries to be
-	 *              executed if the provide prepared statement ID is not known by
-	 *              this host. The rest of the ERROR message body will be [short
-	 *              bytes] representing the unknown ID.
-	 **/
-	 enum Error : ushort {
-		serverError = 0x0000,
-		protocolError = 0x000A,
-		badCredentials = 0x0100,
-		unavailableException = 0x1000,
-		overloaded = 0x1001,
-		isBootstrapping = 0x1002,
-		truncateError = 0x1003,
-		writeTimeout = 0x1100,
-		readTimeout = 0x1200,
-		syntaxError = 0x2000,
-		unauthorized = 0x2100,
-		invalid = 0x2200,
-		configError = 0x2300,
-		alreadyExists = 0x2400,
-		unprepared = 0x2500
-	 }
-
-	 static string toString(Error err)
-	 {
-		switch (err) {
-			case Error.serverError:
-				return "Server error: something unexpected happened. This indicates a server-side bug.";
-			case Error.protocolError:
-				return "Protocol error: some client message triggered a protocol violation (for instance a QUERY message is sent before a STARTUP one has been sent)";
-			case Error.badCredentials:
-				return "Bad credentials: CREDENTIALS request failed because Cassandra did not accept the provided credentials.";
-			case Error.unavailableException:
-				return "Unavailable exception.";
-			case Error.overloaded:
-				return "Overloaded: the request cannot be processed because the coordinator node is overloaded";
-			case Error.isBootstrapping:
-				return "Is_bootstrapping: the request was a read request but the coordinator node is bootstrapping";
-			case Error.truncateError:
-				return "Truncate_error: error during a truncation error.";
-			case Error.writeTimeout:
-				return "Write_timeout: Timeout exception during a write request.";
-			case Error.readTimeout:
-				return "Read_timeout: Timeout exception during a read request.";
-			case Error.syntaxError:
-				return "Syntax_error: The submitted query has a syntax error.";
-			case Error.unauthorized:
-				return "Unauthorized: The logged user doesn't have the right to perform the query.";
-			case Error.invalid:
-				return "Invalid: The query is syntactically correct but invalid.";
-			case Error.configError:
-				return "Config_error: The query is invalid because of some configuration issue.";
-			case Error.alreadyExists:
-				return "Already_exists: The query attempted to create a keyspace or a table that was already existing.";
-			case Error.unprepared:
-				return "Unprepared: Can be thrown while a prepared statement tries to be executed if the provide prepared statement ID is not known by this host.";
-			default:
-				assert(false);
-		}
-	 }
-}
 
 class Authenticator {
 	StringMap getCredentials() {
