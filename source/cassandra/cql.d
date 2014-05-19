@@ -198,36 +198,36 @@ struct FrameHeader {
 	 *
 	 *  Messages are described in Section 4.
 	 */
-	enum OpCode : byte {
-		ERROR,
-		STARTUP,
-		READY,
-		AUTHENTICATE,
-		CREDENTIALS,
-		OPTIONS,
-		SUPPORTED,
-		QUERY,
-		RESULT,
-		PREPARE,
-		EXECUTE,
-		REGISTER,
-		EVENT
-	};
+	enum OpCode : ubyte {
+		error         = 0x00,
+		startup       = 0x01,
+		ready         = 0x02,
+		authenticate  = 0x03,
+		credentials   = 0x04,
+		options       = 0x05,
+		supported     = 0x06,
+		query         = 0x07,
+		result        = 0x08,
+		prepare       = 0x09,
+		execute       = 0x0A,
+		register      = 0x0B,
+		event         = 0x0C
+	}
 	OpCode opcode;
 
-	bool isERROR() const pure nothrow { return opcode == OpCode.ERROR; }
-	bool isSTARTUP() const pure nothrow { return opcode == OpCode.STARTUP; }
-	bool isREADY() const pure nothrow { return opcode == OpCode.READY; }
-	bool isAUTHENTICATE() const pure nothrow { return opcode == OpCode.AUTHENTICATE; }
-	bool isCREDENTIALS() const pure nothrow { return opcode == OpCode.CREDENTIALS; }
-	bool isOPTIONS() const pure nothrow { return opcode == OpCode.OPTIONS; }
-	bool isSUPPORTED() const pure nothrow { return opcode == OpCode.SUPPORTED; }
-	bool isQUERY() const pure nothrow { return opcode == OpCode.QUERY; }
-	bool isRESULT() const pure nothrow { return opcode == OpCode.RESULT; }
-	bool isPREPARE() const pure nothrow { return opcode == OpCode.PREPARE; }
-	bool isEXECUTE() const pure nothrow { return opcode == OpCode.EXECUTE; }
-	bool isREGISTER() const pure nothrow { return opcode == OpCode.REGISTER; }
-	bool isEVENT() const pure nothrow { return opcode == OpCode.EVENT; }
+	bool isERROR() const pure nothrow { return opcode == OpCode.error; }
+	bool isSTARTUP() const pure nothrow { return opcode == OpCode.startup; }
+	bool isREADY() const pure nothrow { return opcode == OpCode.ready; }
+	bool isAUTHENTICATE() const pure nothrow { return opcode == OpCode.authenticate; }
+	bool isCREDENTIALS() const pure nothrow { return opcode == OpCode.credentials; }
+	bool isOPTIONS() const pure nothrow { return opcode == OpCode.options; }
+	bool isSUPPORTED() const pure nothrow { return opcode == OpCode.supported; }
+	bool isQUERY() const pure nothrow { return opcode == OpCode.query; }
+	bool isRESULT() const pure nothrow { return opcode == OpCode.result; }
+	bool isPREPARE() const pure nothrow { return opcode == OpCode.prepare; }
+	bool isEXECUTE() const pure nothrow { return opcode == OpCode.execute; }
+	bool isREGISTER() const pure nothrow { return opcode == OpCode.register; }
+	bool isEVENT() const pure nothrow { return opcode == OpCode.event; }
 
 
 	/**
@@ -520,26 +520,26 @@ private auto appendShortBytes(T, R)(R appender, T data)
 struct Option {
 	/// See Section: 4.2.5.2.
 	enum Type {
-		Custom = 0x0000,
-		Ascii = 0x0001,
-		Bigint = 0x0002,
-		Blob = 0x0003,
-		Boolean = 0x0004,
-		Counter = 0x0005,
-		Decimal = 0x0006,
-		Double = 0x0007,
-		Float = 0x0008,
-		Int = 0x0009,
-		Text = 0x000A,
-		Timestamp = 0x000B,
-		Uuid = 0x000C,
-		Varchar = 0x000D,
-		Varint = 0x000E,
-		Timeuuid = 0x000F,
-		Inet = 0x0010,
-		List = 0x0020,
-		Map = 0x0021,
-		Set = 0x0022
+		custom = 0x0000,
+		ascii = 0x0001,
+		bigInt = 0x0002,
+		blob = 0x0003,
+		boolean = 0x0004,
+		counter = 0x0005,
+		decimal = 0x0006,
+		double_ = 0x0007,
+		float_ = 0x0008,
+		int_ = 0x0009,
+		text = 0x000A,
+		timestamp = 0x000B,
+		uuid = 0x000C,
+		varChar = 0x000D,
+		varInt = 0x000E,
+		timeUUID = 0x000F,
+		inet = 0x0010,
+		list = 0x0020,
+		map = 0x0021,
+		set = 0x0022
 	}
 	Type id;
 	union {
@@ -551,11 +551,11 @@ struct Option {
 	string toString() {
 		auto buf = appender!string();
 		formattedWrite(buf, "%s ", id);
-		if (id == Option.Type.Custom) {
+		if (id == Option.Type.custom) {
 			formattedWrite(buf, "%s", string_value);
-		} else if (id == Option.Type.List || id == Option.Type.Set) {
+		} else if (id == Option.Type.list || id == Option.Type.set) {
 			formattedWrite(buf, "%s", option_value);
-		} else if (id == Option.Type.Map) {
+		} else if (id == Option.Type.map) {
 			formattedWrite(buf, "%s[%s]", key_values_option_value[1], key_values_option_value[0]);
 		}
 		return buf.data;
@@ -583,15 +583,15 @@ struct Option {
  *                     0x0007    EACH_QUORUM
  */
 enum Consistency : ushort  {
-	ANY = 0x0000,
-	ONE,
-	TWO,
-	THREE,
-	QUORUM,
-	ALL,
-	LOCAL_QUORUM,
-	EACH_QUORUM
-};
+	any         = 0x0000,
+	one         = 0x0001,
+	two         = 0x0002,
+	three       = 0x0003,
+	quorum      = 0x0004,
+	all         = 0x0005,
+	localQuorum = 0x0006,
+	eachQuorum  = 0x0007
+}
 
 /**
  *    [string map]      A [short] n, followed by n pair <k><v> where <k> and <v> are [string].
@@ -791,7 +791,7 @@ class Connection {
 	{
 		if (name == m_usedKeyspace) return;
 		enforceValidIdentifier(name);
-		query(`USE `~name, Consistency.ANY);
+		query(`USE `~name, Consistency.any);
 		m_usedKeyspace = name;
 	}
 
@@ -865,7 +865,7 @@ class Connection {
 		if (compression_algorithm.length > 0)
 			data["COMPRESSION"] = compression_algorithm;
 
-		auto fh = makeHeader(FrameHeader.OpCode.STARTUP);
+		auto fh = makeHeader(FrameHeader.OpCode.startup);
 
 		auto bytebuf = appender!(ubyte[])();
 		bytebuf.append(data);
@@ -904,7 +904,7 @@ class Connection {
 	 *  The response to a CREDENTIALS is a READY message (or an ERROR message).
 	 */
 	private void sendCredentials(StringMap data) {
-		auto fh = makeHeader(FrameHeader.OpCode.CREDENTIALS);
+		auto fh = makeHeader(FrameHeader.OpCode.credentials);
 		auto bytebuf = appender!(ubyte[])();
 		bytebuf.append(data);
 		fh.length = bytebuf.getIntLength;
@@ -923,7 +923,7 @@ class Connection {
 	 */
 	StringMultiMap requestOptions() {
 		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.OPTIONS);
+		auto fh = makeHeader(FrameHeader.OpCode.options);
 		write(sock, appender!(ubyte[])().append(fh.bytes));
 		fh = readFrameHeader(sock, counter);
 		if (!fh.isSUPPORTED) {
@@ -946,7 +946,7 @@ class Connection {
 	 */
 	Result query(string q, Consistency consistency) {
 		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.QUERY);
+		auto fh = makeHeader(FrameHeader.OpCode.query);
 		auto bytebuf = appender!(ubyte[])();
 		writeln("-----------");
 		bytebuf.appendLongString(q);
@@ -961,16 +961,16 @@ class Connection {
 		throwOnError(fh);
 		return new Result(fh);
 	}
-	bool insert(string q, Consistency consistency = Consistency.ANY) {
+	bool insert(string q, Consistency consistency = Consistency.any) {
 		connect();
 		assert(q[0.."insert".length]=="INSERT");
 		auto res = query(q, consistency);
-		if (res.kind == Result.Kind.Void) {
+		if (res.kind == Result.Kind.void_) {
 			return true;
 		}
 		throw new Exception("CQLProtocolException: expected void response to insert");
 	}
-	Result select(string q, Consistency consistency = Consistency.QUORUM) {
+	Result select(string q, Consistency consistency = Consistency.quorum) {
 		connect();
 		import std.string : icmp;
 		assert(icmp(q[0.."select".length], "SELECT")==0);
@@ -988,7 +988,7 @@ class Connection {
 	 */
 	PreparedStatement prepare(string q) {
 		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.PREPARE);
+		auto fh = makeHeader(FrameHeader.OpCode.prepare);
 		auto bytebuf = appender!(ubyte[])();
 		writeln("---------=-");
 		bytebuf.appendLongString(q);
@@ -1027,7 +1027,7 @@ class Connection {
 	 */
 	private auto execute(Args...)(ubyte[] preparedStatementID, Consistency consistency, Args args) {
 		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.EXECUTE);
+		auto fh = makeHeader(FrameHeader.OpCode.execute);
 		auto bytebuf = appender!(ubyte[])();
 		writeln("-----=----=-");
 		bytebuf.appendShortBytes(preparedStatementID);
@@ -1069,7 +1069,7 @@ class Connection {
 	 */
 	void listen(Event events...) {
 		connect();
-		auto fh = makeHeader(FrameHeader.OpCode.REGISTER);
+		auto fh = makeHeader(FrameHeader.OpCode.register);
 		auto bytebuf = appender!(ubyte[])();
 		auto tmpbuf = appender!(ubyte[])();
 		tmpbuf.append(events);
@@ -1112,48 +1112,48 @@ class Connection {
 		auto spec_msg = toString(code);
 
 		final switch (code) {
-			case Error.ServerError:
+			case Error.serverError:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.ProtocolError:
+			case Error.protocolError:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.BadCredentials:
+			case Error.badCredentials:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.UnavailableException:
+			case Error.unavailableException:
 				auto cs = cast(Consistency)readShort(sock,counter);
 				auto required = readIntNotNULL(tmp, sock, counter);
 				auto alive = readIntNotNULL(tmp, sock, counter);
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ .to!string(cs) ~" required:"~ to!string(required) ~" alive:"~ to!string(alive));
-			case Error.Overloaded:
+			case Error.overloaded:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.IsBootstrapping:
+			case Error.isBootstrapping:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.TruncateError:
+			case Error.truncateError:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.WriteTimeout:
+			case Error.writeTimeout:
 				auto cl = cast(Consistency)readShort(sock,counter);
 				auto received = readIntNotNULL(tmp, sock, counter);
 				auto blockfor = readIntNotNULL(tmp, sock, counter); // WARN: the type for blockfor does not seem to be in the spec!!!
 				auto writeType = cast(WriteType)readShortString(sock, counter);
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ to!string(cl) ~" received:"~ to!string(received) ~" blockfor:"~ to!string(blockfor) ~" writeType:"~ toString(writeType));
-			case Error.ReadTimeout:
+			case Error.readTimeout:
 				auto cl = cast(Consistency)readShort(sock,counter);
 				auto received = readIntNotNULL(tmp, sock, counter);
 				auto blockfor = readIntNotNULL(tmp, sock, counter); // WARN: the type for blockfor does not seem to be in the spec!!!
 				auto data_present = readByte(sock, counter);
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~" consistency:"~ to!string(cl) ~" received:"~ to!string(received) ~" blockfor:"~ to!string(blockfor) ~" data_present:"~ (data_present==0x00?"false":"true"));
-			case Error.SyntaxError:
+			case Error.syntaxError:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.Unauthorized:
+			case Error.unauthorized:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.Invalid:
+			case Error.invalid:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.ConfigError:
+			case Error.configError:
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg);
-			case Error.AlreadyExists:
+			case Error.alreadyExists:
 				auto ks = readShortString(sock,counter);
 				auto table = readShortString(sock,counter);
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~", keyspace:"~ks ~", table:"~ table );
-			case Error.Unprepared:
+			case Error.unprepared:
 				auto unknown_id = readShort(sock,counter);
 				throw new Exception("CQL Exception, "~ spec_msg ~ msg ~":"~ to!string(unknown_id));
 		}
@@ -1222,31 +1222,31 @@ class Connection {
 			int tmp;
 			kind_ = cast(Kind)readIntNotNULL(tmp, sock, counter);
 			final switch (kind_) {
-				case Kind.Void:
+				case Kind.void_:
 					readVoid(fh); break;
-				case Kind.Rows:
+				case Kind.rows:
 					readRows(fh); break;
-				case Kind.Set_keyspace:
+				case Kind.setKeyspace:
 					readSet_keyspace(fh); break;
-				case Kind.Prepared:
+				case Kind.prepared:
 					readPrepared(fh); break;
-				case Kind.Schema_change:
+				case Kind.schemaChange:
 					readSchema_change(fh); break;
 			}
 		}
 
 		auto rows() {
-			assert(kind_ == Kind.Rows);
+			assert(kind_ == Kind.rows);
 			return rows_;
 		}
 
 		enum Kind : short {
-			Void = 0x0001,
-			Rows = 0x0002,
-			Set_keyspace = 0x0003,
-			Prepared = 0x0004,
-			Schema_change = 0x0005
-		};
+			void_ = 0x0001,
+			rows = 0x0002,
+			setKeyspace = 0x0003,
+			prepared = 0x0004,
+			schemaChange = 0x0005
+		}
 		/**
 		 *4.2.5.1. Void
 		 *
@@ -1254,7 +1254,7 @@ class Connection {
 		 *  successful without providing more information.
 		 */
 		void readVoid(FrameHeader fh) {
-			assert(kind_ == Kind.Void);
+			assert(kind_ == Kind.void_);
 		}
 		/**
 		 *4.2.5.2. Rows
@@ -1265,7 +1265,7 @@ class Connection {
 		MetaData metadata;
 		ubyte[][][] rows_;
 		auto readRows(FrameHeader fh) {
-			assert(kind_ == Kind.Rows || kind_ == Kind.Prepared);
+			assert(kind_ == Kind.rows || kind_ == Kind.prepared);
 			metadata = readRowMetaData(fh);
 			// <rows_count> is read within readRowsContent
 			rows_ = readRowsContent(fh, metadata);
@@ -1346,49 +1346,49 @@ class Connection {
 			auto ret = new Option();
 			ret.id = cast(Option.Type)readShort(s, counter);
 			final switch (ret.id) {
-				case Option.Type.Custom:
+				case Option.Type.custom:
 					ret.string_value = readShortString(s, counter);
 					break;
-				case Option.Type.Ascii:
+				case Option.Type.ascii:
 					break;
-				case Option.Type.Bigint:
+				case Option.Type.bigInt:
 					break;
-				case Option.Type.Blob:
+				case Option.Type.blob:
 					break;
-				case Option.Type.Boolean:
+				case Option.Type.boolean:
 					break;
-				case Option.Type.Counter:
+				case Option.Type.counter:
 					break;
-				case Option.Type.Decimal:
+				case Option.Type.decimal:
 					break;
-				case Option.Type.Double:
+				case Option.Type.double_:
 					break;
-				case Option.Type.Float:
+				case Option.Type.float_:
 					break;
-				case Option.Type.Int:
+				case Option.Type.int_:
 					break;
-				case Option.Type.Text:
+				case Option.Type.text:
 					break;
-				case Option.Type.Timestamp:
+				case Option.Type.timestamp:
 					break;
-				case Option.Type.Uuid:
+				case Option.Type.uuid:
 					break;
-				case Option.Type.Varchar:
+				case Option.Type.varChar:
 					break;
-				case Option.Type.Varint:
+				case Option.Type.varInt:
 					break;
-				case Option.Type.Timeuuid:
+				case Option.Type.timeUUID:
 					break;
-				case Option.Type.Inet:
+				case Option.Type.inet:
 					break;
-				case Option.Type.List:
+				case Option.Type.list:
 					ret.option_value = readOption(s, counter);
 					break;
-				case Option.Type.Map:
+				case Option.Type.map:
 					ret.key_values_option_value[0] = readOption(s, counter);
 					ret.key_values_option_value[1] = readOption(s, counter);
 					break;
-				case Option.Type.Set:
+				case Option.Type.set:
 					ret.option_value = readOption(s, counter);
 					break;
 			}
@@ -1443,15 +1443,15 @@ class Connection {
 			for (int i=0; i<md.columns_count; i++) {
 				//log("reading index[%d], %s", i, md.column_specs[i]);
 				final switch (md.column_specs[i].type.id) {
-					case Option.Type.Custom:
+					case Option.Type.custom:
 						log("warning column %s has custom type", md.column_specs[i].name);
 						ret ~= readIntBytes(sock, counter);
 						break;
-					case Option.Type.Counter:
+					case Option.Type.counter:
 						ret ~= readIntBytes(sock, counter);
 						throw new Exception("Read Counter Type has not been checked this is what we got: "~ cast(string)ret[$-1]);
 						//break;
-					case Option.Type.Decimal:
+					case Option.Type.decimal:
 						auto twobytes = readRawBytes(sock, counter, 2);
 						if (twobytes == [0xff,0xff]) {
 							twobytes = readRawBytes(sock, counter, 2);
@@ -1466,41 +1466,41 @@ class Connection {
 							throw new Exception("New kind of decimal encountered"~ writer.data);
 						}
 						break;
-					case Option.Type.Boolean:
+					case Option.Type.boolean:
 						ret ~= readRawBytes(sock, counter, int.sizeof);
 						break;
 
-					case Option.Type.Ascii:
+					case Option.Type.ascii:
 						goto case;
-					case Option.Type.Bigint:
+					case Option.Type.bigInt:
 						goto case;
-					case Option.Type.Blob:
+					case Option.Type.blob:
 						goto case;
-					case Option.Type.Double:
+					case Option.Type.double_:
 						goto case;
-					case Option.Type.Float:
+					case Option.Type.float_:
 						goto case;
-					case Option.Type.Int:
+					case Option.Type.int_:
 						goto case;
-					case Option.Type.Text:
+					case Option.Type.text:
 						goto case;
-					case Option.Type.Timestamp:
+					case Option.Type.timestamp:
 						goto case;
-					case Option.Type.Uuid:
+					case Option.Type.uuid:
 						goto case;
-					case Option.Type.Varchar:
+					case Option.Type.varChar:
 						goto case;
-					case Option.Type.Varint:
+					case Option.Type.varInt:
 						goto case;
-					case Option.Type.Timeuuid:
+					case Option.Type.timeUUID:
 						goto case;
-					case Option.Type.Inet:
+					case Option.Type.inet:
 						goto case;
-					case Option.Type.List:
+					case Option.Type.list:
 						goto case;
-					case Option.Type.Map:
+					case Option.Type.map:
 						goto case;
-					case Option.Type.Set:
+					case Option.Type.set:
 						ret ~= readIntBytes(sock, counter);
 						break;
 
@@ -1515,7 +1515,7 @@ class Connection {
 		 *  [string] indicating the name of the keyspace that has been set.
 		 */
 		protected string readSet_keyspace(FrameHeader fh) {
-			assert(kind_ is Kind.Set_keyspace);
+			assert(kind_ is Kind.setKeyspace);
 			return readShortString(sock, counter);
 		}
 
@@ -1556,13 +1556,15 @@ class Connection {
 		 *  updating the table the index is on.
 		 */
 		enum Change : string {
-			CREATED = "CREATED", UPDATED = "UPDATED", DROPPED = "DROPPED"
+			created = "CREATED",
+			updated = "UPDATED",
+			dropped = "DROPPED"
 		}
 		Change lastChange_; string lastchange() { return lastChange_; }
 		string currentKeyspace_; string keyspace() { return currentKeyspace_; }
 		string currentTable_; string table() { return currentTable_; }
 		protected void readSchema_change(FrameHeader fh) {
-			assert(kind_ is Kind.Schema_change);
+			assert(kind_ is Kind.schemaChange);
 
 			lastChange_ = cast(Change)readShortString(sock, counter);
 
@@ -1573,18 +1575,18 @@ class Connection {
 
 	class PreparedStatement : Result {
 		ubyte[] id;
-		Consistency consistency = Consistency.ANY;
+		Consistency consistency = Consistency.any;
 
 		this(FrameHeader fh) {
 			super(fh);
-			if (kind != Result.Kind.Prepared) {
+			if (kind != Result.Kind.prepared) {
 				throw new Exception("CQLProtocolException, Unknown result type for PREPARE command");
 			}
 		}
 
 		/// See section 4.2.5.4.
 		protected override void readPrepared(FrameHeader fh) {
-			assert(kind_ is Kind.Prepared);
+			assert(kind_ is Kind.prepared);
 			id = readShortBytes(sock, counter);
 			metadata = readRowMetaData(fh);
 		}
@@ -1633,12 +1635,12 @@ class Connection {
 	 *  should be enough), otherwise they may experience a connection refusal at
 	 *  first.
 	 */
-	enum Event :string {
-		TOPOLOGY_CHANGE = "TOPOLOGY_CHANGE",
-		STATUS_CHANGE = "STATUS_CHANGE",
-		SCHEMA_CHANGE = "SCHEMA_CHANGE",
-		NEW_NODE = "NEW_NODE",
-		UP = "UP"
+	enum Event : string {
+		topologyChange = "TOPOLOGY_CHANGE",
+		statusChange = "STATUS_CHANGE",
+		schemaChange = "SCHEMA_CHANGE",
+		newNode = "NEW_NODE",
+		up = "UP"
 	}
 	protected void readEvent(FrameHeader fh) {
 		assert(fh.isEVENT);
@@ -1823,53 +1825,53 @@ class Connection {
 	 *              bytes] representing the unknown ID.
 	 **/
 	 enum Error : ushort {
-		ServerError = 0x0000,
-		ProtocolError = 0x000A,
-		BadCredentials = 0x0100,
-		UnavailableException = 0x1000,
-		Overloaded = 0x1001,
-		IsBootstrapping = 0x1002,
-		TruncateError = 0x1003,
-		WriteTimeout = 0x1100,
-		ReadTimeout = 0x1200,
-		SyntaxError = 0x2000,
-		Unauthorized = 0x2100,
-		Invalid = 0x2200,
-		ConfigError = 0x2300,
-		AlreadyExists = 0x2400,
-		Unprepared = 0x2500
+		serverError = 0x0000,
+		protocolError = 0x000A,
+		badCredentials = 0x0100,
+		unavailableException = 0x1000,
+		overloaded = 0x1001,
+		isBootstrapping = 0x1002,
+		truncateError = 0x1003,
+		writeTimeout = 0x1100,
+		readTimeout = 0x1200,
+		syntaxError = 0x2000,
+		unauthorized = 0x2100,
+		invalid = 0x2200,
+		configError = 0x2300,
+		alreadyExists = 0x2400,
+		unprepared = 0x2500
 	 }
 	 string toString(Error err) {
 		switch (err) {
-			case Error.ServerError:
+			case Error.serverError:
 				return "Server error: something unexpected happened. This indicates a server-side bug.";
-			case Error.ProtocolError:
+			case Error.protocolError:
 				return "Protocol error: some client message triggered a protocol violation (for instance a QUERY message is sent before a STARTUP one has been sent)";
-			case Error.BadCredentials:
+			case Error.badCredentials:
 				return "Bad credentials: CREDENTIALS request failed because Cassandra did not accept the provided credentials.";
-			case Error.UnavailableException:
+			case Error.unavailableException:
 				return "Unavailable exception.";
-			case Error.Overloaded:
+			case Error.overloaded:
 				return "Overloaded: the request cannot be processed because the coordinator node is overloaded";
-			case Error.IsBootstrapping:
+			case Error.isBootstrapping:
 				return "Is_bootstrapping: the request was a read request but the coordinator node is bootstrapping";
-			case Error.TruncateError:
+			case Error.truncateError:
 				return "Truncate_error: error during a truncation error.";
-			case Error.WriteTimeout:
+			case Error.writeTimeout:
 				return "Write_timeout: Timeout exception during a write request.";
-			case Error.ReadTimeout:
+			case Error.readTimeout:
 				return "Read_timeout: Timeout exception during a read request.";
-			case Error.SyntaxError:
+			case Error.syntaxError:
 				return "Syntax_error: The submitted query has a syntax error.";
-			case Error.Unauthorized:
+			case Error.unauthorized:
 				return "Unauthorized: The logged user doesn't have the right to perform the query.";
-			case Error.Invalid:
+			case Error.invalid:
 				return "Invalid: The query is syntactically correct but invalid.";
-			case Error.ConfigError:
+			case Error.configError:
 				return "Config_error: The query is invalid because of some configuration issue.";
-			case Error.AlreadyExists:
+			case Error.alreadyExists:
 				return "Already_exists: The query attempted to create a keyspace or a table that was already existing.";
-			case Error.Unprepared:
+			case Error.unprepared:
 				return "Unprepared: Can be thrown while a prepared statement tries to be executed if the provide prepared statement ID is not known by this host.";
 			default:
 				assert(false);
@@ -1954,13 +1956,13 @@ unittest {
 
 	try {
 		writefln("USE twissandra");
-		auto res = cassandra.query(`USE twissandra`, Consistency.ANY);
+		auto res = cassandra.query(`USE twissandra`, Consistency.any);
 		writefln("using %s %s", res.kind_, res.keyspace);
 	} catch (Exception e) {
 
 		try {
 			writefln("CREATE KEYSPACE twissandra");
-			auto res = cassandra.query(`CREATE KEYSPACE twissandra WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, Consistency.ANY);
+			auto res = cassandra.query(`CREATE KEYSPACE twissandra WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, Consistency.any);
 			writefln("created %s %s %s", res.kind_, res.keyspace, res.lastchange);
 		} catch (Exception e) {writefln(e.msg);}
 	}
@@ -1976,7 +1978,7 @@ unittest {
 				state varchar,
 				birth_year bigint,
 				PRIMARY KEY (user_name)
-			  )`, Consistency.ANY);
+			  )`, Consistency.any);
 		writefln("created table %s %s %s %s", res.kind_, res.keyspace, res.lastchange, res.table);
 	} catch (Exception e) {writefln(e.msg);}
 
@@ -2019,7 +2021,7 @@ unittest {
 				varint_col varint,
 
 				PRIMARY KEY (user_name)
-			  )`, Consistency.ANY);
+			  )`, Consistency.any);
 		writefln("created table %s %s %s %s", res.kind_, res.keyspace, res.lastchange, res.table);
 	} catch (Exception e) {writefln(e.msg);}
 

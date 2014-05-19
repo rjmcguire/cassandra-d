@@ -26,14 +26,14 @@ struct CassandraKeyspace {
 	@property string name() const { return m_name; }
 	@property inout(CassandraClient) client() inout { return m_client; }
 
-	Connection.Result query(string q, Consistency consistency = Consistency.ANY)
+	Connection.Result query(string q, Consistency consistency = Consistency.any)
 	{
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
 		return conn.query(q, consistency);
 	}
 
-	Connection.Result select(string q, Consistency consistency = Consistency.QUORUM) {
+	Connection.Result select(string q, Consistency consistency = Consistency.quorum) {
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
 		return conn.select(q, consistency);

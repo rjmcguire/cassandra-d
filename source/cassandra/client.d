@@ -34,7 +34,7 @@ class CassandraClient {
 
 	CassandraKeyspace createKeyspace(string name/*, ...*/) {
 		enforceValidIdentifier(name);
-		lockConnection().query(format(`CREATE KEYSPACE %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, name), Consistency.ANY);
+		lockConnection().query(format(`CREATE KEYSPACE %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, name), Consistency.any);
 		return getKeyspace(name);
 	}
 
