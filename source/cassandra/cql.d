@@ -1,14 +1,14 @@
 module cassandra.cql;
 
+import std.array;
 import std.bitmanip : bitfields;
 import std.conv;
-import std.traits;
-
+import std.exception : enforce;
 import std.format : formattedWrite;
-import std.array;
+import std.range : isOutputRange;
 import std.stdint;
-
 import std.stdio : writeln, writef, writefln;
+import std.traits;
 
 import cassandra.internal.utils;
 import cassandra.internal.tcpconnection;
@@ -214,19 +214,20 @@ struct FrameHeader {
 		EVENT
 	};
 	OpCode opcode;
-	bool isERROR() { if (opcode == OpCode.ERROR) return true; return false; }
-	bool isSTARTUP() { if (opcode == OpCode.STARTUP) return true; return false; }
-	bool isREADY() { if (opcode == OpCode.READY) return true; return false; }
-	bool isAUTHENTICATE() { if (opcode == OpCode.AUTHENTICATE) return true; return false; }
-	bool isCREDENTIALS() { if (opcode == OpCode.CREDENTIALS) return true; return false; }
-	bool isOPTIONS() { if (opcode == OpCode.OPTIONS) return true; return false; }
-	bool isSUPPORTED() { if (opcode == OpCode.SUPPORTED) return true; return false; }
-	bool isQUERY() { if (opcode == OpCode.QUERY) return true; return false; }
-	bool isRESULT() { if (opcode == OpCode.RESULT) return true; return false; }
-	bool isPREPARE() { if (opcode == OpCode.PREPARE) return true; return false; }
-	bool isEXECUTE() { if (opcode == OpCode.EXECUTE) return true; return false; }
-	bool isREGISTER() { if (opcode == OpCode.REGISTER) return true; return false; }
-	bool isEVENT() { if (opcode == OpCode.EVENT) return true; return false; }
+
+	bool isERROR() const pure nothrow { return opcode == OpCode.ERROR; }
+	bool isSTARTUP() const pure nothrow { return opcode == OpCode.STARTUP; }
+	bool isREADY() const pure nothrow { return opcode == OpCode.READY; }
+	bool isAUTHENTICATE() const pure nothrow { return opcode == OpCode.AUTHENTICATE; }
+	bool isCREDENTIALS() const pure nothrow { return opcode == OpCode.CREDENTIALS; }
+	bool isOPTIONS() const pure nothrow { return opcode == OpCode.OPTIONS; }
+	bool isSUPPORTED() const pure nothrow { return opcode == OpCode.SUPPORTED; }
+	bool isQUERY() const pure nothrow { return opcode == OpCode.QUERY; }
+	bool isRESULT() const pure nothrow { return opcode == OpCode.RESULT; }
+	bool isPREPARE() const pure nothrow { return opcode == OpCode.PREPARE; }
+	bool isEXECUTE() const pure nothrow { return opcode == OpCode.EXECUTE; }
+	bool isREGISTER() const pure nothrow { return opcode == OpCode.REGISTER; }
+	bool isEVENT() const pure nothrow { return opcode == OpCode.EVENT; }
 
 
 	/**
@@ -255,7 +256,7 @@ struct FrameHeader {
 
 
 private int getIntLength(Appender!(ubyte[]) appender) {
-	assert(appender.data.length < int.max);
+	enforce(appender.data.length < int.max);
 	return cast(int)appender.data.length;
 }
 
@@ -435,7 +436,9 @@ private ubyte[] readIntBytes(TCPConnection s, ref int counter) {
 	counter -= buf.length;
 	return buf;
 }
-private auto appendIntBytes(T)(Appender!(ubyte[]) appender, T data) {
+private auto appendIntBytes(T, R)(R appender, T data)
+	if (isOutputRange!(R, ubyte))
+{
 	static if (is(T == string) || is(T == ubyte[]) || is(T == byte[])) {
 		assert(data.length < int.max);
 		append(appender, cast(int)data.length);
@@ -493,7 +496,9 @@ private ubyte[] readShortBytes(TCPConnection s, ref int counter) {
 	counter -= buf.length;
 	return buf;
 }
-private auto appendShortBytes(T)(Appender!(ubyte[]) appender, T data) {
+private auto appendShortBytes(T, R)(R appender, T data)
+	if (isOutputRange!(R, ubyte))
+{
 	static if (is (T == ubyte[]) || is (T == string)) {
 		assert(data.length < short.max);
 		append(appender, cast(short)data.length);
@@ -593,7 +598,9 @@ enum Consistency : ushort  {
  */
 alias string[string] StringMap;
 
-private auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
+private auto append(R, Args...)(R appender, Args args)
+	if (isOutputRange!(R, ubyte))
+{
 	import std.bitmanip : write;
 
 	ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -626,7 +633,9 @@ private auto append(Args...)(Appender!(ubyte[]) appender, Args args) {
 	return appender;
 }
 //todo: add all the append functions features to append!T(appender,T)
-private auto appendRawBytes(T)(Appender!(ubyte[]) appender, T data) {
+private auto appendRawBytes(T, R)(R appender, T data)
+	if (isOutputRange!(R, ubyte))
+{
 	import std.bitmanip : write;
 	static if (is (T == ushort) || is(T==uint) || is(T==int)) {
 		ubyte[] buffer = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -637,7 +646,9 @@ private auto appendRawBytes(T)(Appender!(ubyte[]) appender, T data) {
 	}
 }
 
-private auto appendLongString(Appender!(ubyte[]) appender, string data) {
+private auto appendLongString(R)(R appender, string data)
+	if (isOutputRange!(R, ubyte))
+{
 	assert(data.length < int.max);
 	append(appender, cast(int)data.length);
 
@@ -646,7 +657,9 @@ private auto appendLongString(Appender!(ubyte[]) appender, string data) {
 	return appender;
 }
 
-private auto appendOverride(Appender!(ubyte[]) appender, StringMap sm) {
+private auto appendOverride(R)(R appender, StringMap sm)
+	if (isOutputRange!(R, ubyte))
+{
 	assert(sm.length < short.max);
 
 	appender.append(cast(short)sm.length);
@@ -656,17 +669,23 @@ private auto appendOverride(Appender!(ubyte[]) appender, StringMap sm) {
 	}
 	return appender;
 }
-private auto appendOverride(Appender!(ubyte[]) appender, Consistency c) {
+private auto appendOverride(R)(R appender, Consistency c)
+	if (isOutputRange!(R, ubyte))
+{
 	appender.append(cast(short)c);
 }
 
-private auto appendOverride(Appender!(ubyte[]) appender, bool b) {
+private auto appendOverride(R)(R appender, bool b)
+	if (isOutputRange!(R, ubyte))
+{
 	if (b)
 		appender.append(cast(int)0x00000001);
 	else
 		appender.append(cast(int)0x00000000);
 }
-private auto appendOverride(Appender!(ubyte[]) appender, string[] strs) {
+private auto appendOverride(R)(R appender, string[] strs)
+	if (isOutputRange!(R, ubyte))
+{
 	foreach (str; strs) {
 		appender.append(str);
 	}
@@ -1924,8 +1943,8 @@ string bestCassandraType(T)() {
 
 
 unittest {
-	auto cassandra = new Connection();
-	cassandra.connect("127.0.0.1", 9042);
+	auto cassandra = new Connection("127.0.0.1", 9042);
+	cassandra.connect();
 	scope(exit) cassandra.close();
 
 	auto opts = cassandra.requestOptions();
