@@ -882,7 +882,7 @@ class Connection {
 
 	private FrameHeader authenticate(FrameHeader fh) {
 		auto authenticatorname = readAuthenticate(fh);
-		auto authenticator = GetAuthenticator(authenticatorname);
+		auto authenticator = getAuthenticator(authenticatorname);
 		sendCredentials(authenticator.getCredentials());
 		throw new Exception("NotImplementedException Authentication: "~ authenticatorname);
 	}
@@ -1841,7 +1841,9 @@ class Connection {
 		alreadyExists = 0x2400,
 		unprepared = 0x2500
 	 }
-	 string toString(Error err) {
+
+	 static string toString(Error err)
+	 {
 		switch (err) {
 			case Error.serverError:
 				return "Server error: something unexpected happened. This indicates a server-side bug.";
@@ -1885,7 +1887,8 @@ class Authenticator {
 		return ret;
 	}
 }
-Authenticator GetAuthenticator(string type) {
+
+Authenticator getAuthenticator(string type) {
 	// TODO: provide real authenticator types that work with the ones in Cassandra
 	return new Authenticator();
 }
@@ -1912,36 +1915,21 @@ class NotImplementedException : CQLException {
 }
 
 
-string bestCassandraType(T)() {
+string bestCassandraType(T)()
+{
 	import std.datetime;
-
-	static if (is(T == bool)) {
-		return "boolean";
-	} else static if (is(T == int)) {
-		return "int";
-	} else static if (is (T == long)) {
-		return "bigint";
-	} else static if (is (T == float)) {
-		return "float";
-	} else static if (is (T == double)) {
-		return "double";
-	} else static if (is (T == string)) {
-		return "text";
-	} else static if (is (T == ubyte[])) {
-		return "blob";
-	} else static if (is (T == InetAddress)) {
-		return "inet";
-	} else static if (is (T == InetAddress6)) {
-		return "inet";
-	} else static if (is (T == DateTime)) {
-		return "timestamp";
-	} else {
-		assert(0, "Can't suggest a cassandra cql type for storing: "~T.stringof);
-	}
-
+	static if (is(T == bool)) return "boolean";
+	else static if (is(T == int)) return "int";
+	else static if (is (T == long)) return "bigint";
+	else static if (is (T == float)) return "float";
+	else static if (is (T == double)) return "double";
+	else static if (is (T == string)) return "text";
+	else static if (is (T == ubyte[])) return "blob";
+	else static if (is (T == InetAddress)) return "inet";
+	else static if (is (T == InetAddress6)) return "inet";
+	else static if (is (T == DateTime)) return "timestamp";
+	else static assert(0, "Can't suggest a cassandra cql type for storing: "~T.stringof);
 }
-
-
 
 
 unittest {
