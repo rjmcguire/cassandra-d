@@ -2,10 +2,13 @@ module cassandra.cassandradb;
 
 public import cassandra.client;
 
-CassandraClient connectCassandraDB(string host, ushort port) {
-	return new CassandraClient(host, port);
-}
+import cassandra.connection;
 
-CassandraClient connectCassandraDB(string host) {
-	return new CassandraClient(host);
+
+/**
+	Connects to a Cassandra instance.
+*/
+CassandraClient connectCassandraDB(string host, ushort port = Connection.defaultPort)
+{
+	return new CassandraClient(host, port);
 }

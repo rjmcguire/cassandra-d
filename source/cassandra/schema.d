@@ -7,18 +7,17 @@ import cassandra.internal.utils;
 
 struct CassandraSchema {
 	private {
-		CassandraKeyspace keyspace_;
-		string name_;
+		CassandraKeyspace m_keyspace;
+		string m_name;
 	}
 
-	this(CassandraKeyspace keyspace, string schema_name) {
+	this(CassandraKeyspace keyspace, string schema_name)
+	{
 		enforceValidIdentifier(schema_name);
 
-		keyspace_ = keyspace;
-		name_ = schema_name;
+		m_keyspace = keyspace;
+		m_name = schema_name;
 	}
 
-	@property
-	string name() { return name_; }
-
+	@property string name() const { return m_name; }
 }

@@ -19,7 +19,8 @@ class CassandraClient {
 		}
 	}
 
-	this(string host, ushort port = Connection.defaultPort) {
+	this(string host, ushort port = Connection.defaultPort)
+	{
 		m_host = host;
 		m_port = port;
 
@@ -28,11 +29,10 @@ class CassandraClient {
 		} else m_connection = createConnection();
 	}
 
-	CassandraKeyspace getKeyspace(string name) {
-		return CassandraKeyspace(this, name);
-	}
+	CassandraKeyspace getKeyspace(string name) { return CassandraKeyspace(this, name); }
 
-	CassandraKeyspace createKeyspace(string name/*, ...*/) {
+	CassandraKeyspace createKeyspace(string name/*, ...*/)
+	{
 		enforceValidIdentifier(name);
 		lockConnection().query(format(`CREATE KEYSPACE %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, name), Consistency.any);
 		return getKeyspace(name);

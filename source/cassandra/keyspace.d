@@ -26,6 +26,10 @@ struct CassandraKeyspace {
 	@property string name() const { return m_name; }
 	@property inout(CassandraClient) client() inout { return m_client; }
 
+	CassandraSchema getSchema(string schema) { return CassandraSchema(this, schema); }
+
+	CassandraTable getTable(string table) { return CassandraTable(this, table); }
+
 	Connection.Result query(string q, Consistency consistency = Consistency.any)
 	{
 		auto conn = m_client.lockConnection();
@@ -33,17 +37,10 @@ struct CassandraKeyspace {
 		return conn.query(q, consistency);
 	}
 
-	Connection.Result select(string q, Consistency consistency = Consistency.quorum) {
+	Connection.Result select(string q, Consistency consistency = Consistency.quorum)
+	{
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
 		return conn.select(q, consistency);
-	}
-
-	CassandraSchema getSchema(string schema) {
-		return CassandraSchema(this, schema);
-	}
-
-	CassandraTable getTable(string table) {
-		return CassandraTable(this, table);
 	}
 }
