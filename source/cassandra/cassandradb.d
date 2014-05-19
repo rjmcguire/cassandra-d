@@ -2,7 +2,7 @@ module cassandra.cassandradb;
 
 public import cassandra.client;
 
-import cassandra.cql;
+import cassandra.cql.connection;
 
 
 /**

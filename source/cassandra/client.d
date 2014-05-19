@@ -1,7 +1,7 @@
 module cassandra.client;
 
 public import cassandra.keyspace;
-import cassandra.cql;
+import cassandra.cql.connection;
 import cassandra.internal.utils;
 
 import std.string : format;

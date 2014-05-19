@@ -1,6 +1,5 @@
 module cassandra.schema;
 
-import cassandra.cql;
 import cassandra.keyspace;
 import cassandra.internal.utils;
 
