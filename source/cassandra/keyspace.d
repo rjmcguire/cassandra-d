@@ -30,14 +30,14 @@ struct CassandraKeyspace {
 
 	CassandraTable getTable(string table) { return CassandraTable(this, table); }
 
-	Connection.Result query(string q, Consistency consistency = Consistency.any)
+	CassandraResult query(string q, Consistency consistency = Consistency.any)
 	{
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
 		return conn.query(q, consistency);
 	}
 
-	Connection.Result select(string q, Consistency consistency = Consistency.quorum)
+	CassandraResult select(string q, Consistency consistency = Consistency.quorum)
 	{
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
