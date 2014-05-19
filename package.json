@@ -5,7 +5,7 @@
 	"license": "MIT",
 	"authors": ["Rory McGuire", "Sönke Ludwig"],
 	"dependencies": {
-		"vibe-d": {"version": "~master", "optional": true}
+		"vibe-d": {"version": "~>0.7.19", "optional": true}
 	},
 	"targetType": "library",
 	"-ddoxFilterArgs": ["--min-protection=Protected", "--ex=cassandra.internal."]
