@@ -34,7 +34,7 @@ struct CassandraKeyspace {
 	{
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
-		return conn.query(q, consistency);
+		return conn.query(conn, q, consistency);
 	}
 
 	PreparedStatement prepare(string q)
@@ -48,6 +48,6 @@ struct CassandraKeyspace {
 	{
 		auto conn = m_client.lockConnection();
 		// TODO: assert(stmt.keyspace is this);
-		return conn.execute(stmt, args);
+		return conn.execute(conn, stmt, args);
 	}
 }

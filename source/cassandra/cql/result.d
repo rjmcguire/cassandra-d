@@ -2,6 +2,10 @@ module cassandra.cql.result;
 
 public import cassandra.cql.utils;
 
+import cassandra.cql.connection;
+import cassandra.internal.utils;
+import cassandra.internal.tcpconnection;
+
 import std.array;
 import std.bigint;
 import std.bitmanip : bitfields;
@@ -12,10 +16,6 @@ import std.range : isOutputRange;
 import std.stdint;
 import std.string : format;
 import std.traits;
-
-import cassandra.internal.utils;
-import cassandra.internal.tcpconnection;
-
 
 
 struct CassandraResult {
@@ -104,9 +104,10 @@ struct CassandraResult {
 		@property ref int m_counter() { return *m_counterP; }
 		MetaData m_metadata;
 		int m_rowCount;
+		Connection.Lock m_lock;
 	}
 
-	this(FrameHeader fh, TCPConnection sock, ref int counter)
+	this(Connection.Lock lock, FrameHeader fh, TCPConnection sock, ref int counter)
 	{
 		m_fh = fh;
 		m_sock = sock;
@@ -125,14 +126,17 @@ struct CassandraResult {
 			case Kind.prepared: break; // ignored and handled by PreparedStatement later
 			case Kind.schemaChange: readSchema_change(); break;
 		}
+
+		if (m_rowCount) {
+			assert(lock != Connection.Lock.init);
+			m_lock = lock;
+		}
 	}
 
 	~this()
 	{
 		while (!empty) dropRow();
 	}
-
-	@disable this(this);
 
 	@property Kind kind() { return m_kind; }
 	@property string lastchange() { return m_lastChange; }
@@ -173,7 +177,7 @@ struct CassandraResult {
 			}
 		}
 
-		m_rowCount--;
+		if (!--m_rowCount) m_lock.destroy();
 	}
 
 	private bool readField(T)(ref T dst, Option.Type type)
@@ -193,8 +197,6 @@ struct CassandraResult {
 		auto buf = new ubyte[len];
 		m_sock.read(buf);
 		m_counter -= len;
-
-		log("FIELD %s: %s", type, buf);
 
 		// TODO:
 		//   Option.Type.inet:
@@ -247,7 +249,7 @@ struct CassandraResult {
 	void dropRow()
 	{
 		readRowContent();
-		m_rowCount--;
+		if (!--m_rowCount) m_lock.destroy();
 	}
 
 	/*

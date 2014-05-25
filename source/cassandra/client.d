@@ -1,6 +1,7 @@
 module cassandra.client;
 
 public import cassandra.keyspace;
+
 import cassandra.cql.connection;
 import cassandra.internal.utils;
 
@@ -34,7 +35,8 @@ class CassandraClient {
 	CassandraKeyspace createKeyspace(string name/*, ...*/)
 	{
 		enforceValidIdentifier(name);
-		lockConnection().query(format(`CREATE KEYSPACE %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, name), Consistency.any);
+		auto conn = lockConnection();
+		conn.query(conn, format(`CREATE KEYSPACE %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`, name), Consistency.any);
 		return getKeyspace(name);
 	}
 
