@@ -773,20 +773,35 @@ class NotImplementedException : CQLException {
 }
 
 
-string bestCassandraType(T)()
+template bestCassandraType(T)
 {
 	import std.datetime;
-	static if (is(T == bool)) return "boolean";
-	else static if (is(T == int)) return "int";
-	else static if (is (T == long)) return "bigint";
-	else static if (is (T == float)) return "float";
-	else static if (is (T == double)) return "double";
-	else static if (is (T == string)) return "text";
-	else static if (is (T == ubyte[])) return "blob";
-	else static if (is (T == InetAddress)) return "inet";
-	else static if (is (T == InetAddress6)) return "inet";
-	else static if (is (T == DateTime)) return "timestamp";
+	static if (is (T == bool)) enum bestCassandraType = "boolean";
+	else static if (is (T == int)) enum bestCassandraType = "int";
+	else static if (is (T == long)) enum bestCassandraType = "bigint";
+	else static if (is (T == float)) enum bestCassandraType = "float";
+	else static if (is (T == double)) enum bestCassandraType = "double";
+	else static if (is (T == string)) enum bestCassandraType = "text";
+	else static if (is (T == ubyte[])) enum bestCassandraType = "blob";
+	else static if (is (T == InetAddress)) enum bestCassandraType = "inet";
+	else static if (is (T == InetAddress6)) enum bestCassandraType = "inet";
+	else static if (is (T == DateTime)) enum bestCassandraType = "timestamp";
 	else static assert(0, "Can't suggest a cassandra cql type for storing: "~T.stringof);
+}
+
+string toCQLString(T)(T value)
+{
+	static if (is (T == bool) || is (T : long) || is (T : real))
+		return to!string(value);
+	else static if (isSomeString!T) {
+		auto ret = appender!string();
+		ret.reserve(value.length);
+		foreach (dchar ch; value) {
+			if (ch == '\'') ret.put("''");
+			else ret.put(ch);
+		}
+		return ret.data;
+	} else static assert(false, "Type "~T.stringof~" isn't implemented.");
 }
 
 protected void log(Args...)(string s, Args args)

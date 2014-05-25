@@ -196,7 +196,7 @@ class Connection {
 	 *  The server will respond to a QUERY message with a RESULT message, the content
 	 *  of which depends on the query.
 	 */
-	CassandraResult query(string q, Consistency consistency) {
+	CassandraResult query(string q, Consistency consistency = Consistency.any) {
 		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.query);
 		auto bytebuf = appender!(ubyte[])();
@@ -212,21 +212,6 @@ class Connection {
 		fh = readFrameHeader(sock, m_counter);
 		throwOnError(fh);
 		return new CassandraResult(fh, sock, m_counter);
-	}
-	bool insert(string q, Consistency consistency = Consistency.any) {
-		connect();
-		assert(q[0.."insert".length]=="INSERT");
-		auto res = query(q, consistency);
-		if (res.kind == CassandraResult.Kind.void_) {
-			return true;
-		}
-		throw new Exception("CQLProtocolException: expected void response to insert");
-	}
-	CassandraResult select(string q, Consistency consistency = Consistency.quorum) {
-		connect();
-		import std.string : icmp;
-		assert(icmp(q[0.."select".length], "SELECT")==0);
-		return query(q, consistency);
 	}
 
 	 /**
@@ -771,15 +756,15 @@ unittest {
 
 	try {
 		log("INSERT");
-		assert(cassandra.insert(`INSERT INTO users
+		assert(cassandra.query(`INSERT INTO users
 				(user_name, password)
-				VALUES ('jsmith', 'ch@ngem3a')`));
+				VALUES ('jsmith', 'ch@ngem3a')`, Consistency.any));
 		log("inserted");
 	} catch (Exception e) { log(e.msg); assert(false); }
 
 	try {
 		log("SELECT");
-		auto res = cassandra.select(`SELECT * FROM users WHERE user_name='jsmith'`);
+		auto res = cassandra.query(`SELECT * FROM users WHERE user_name='jsmith'`, Consistency.any);
 		log("select resulted in %s\n%s", res.kind, res);
 	} catch (Exception e) { log(e.msg); assert(false); }
 
@@ -814,7 +799,7 @@ unittest {
 
 	try {
 		log("INSERT into alltypes");
-		assert(cassandra.insert(`INSERT INTO alltypes (user_name,birth_year,ascii_col,blob_col,booleant_col, booleanf_col,decimal_col,double_col,float_col,inet_col,int_col,list_col,map_col,set_col,text_col,timestamp_col,uuid_col,timeuuid_col,varint_col)
+		assert(cassandra.query(`INSERT INTO alltypes (user_name,birth_year,ascii_col,blob_col,booleant_col, booleanf_col,decimal_col,double_col,float_col,inet_col,int_col,list_col,map_col,set_col,text_col,timestamp_col,uuid_col,timeuuid_col,varint_col)
 				VALUES ('bob@domain.com', 7777777777,
 					'someasciitext', 0x2020202020202020202020202020,
 					True, False,
@@ -823,7 +808,7 @@ unittest {
 					'some text col value', 'now', aaaaaaaa-eeee-cccc-9876-dddddddddddd,
 					 now(),
 					9494949449
-					)`));
+					)`, Consistency.any));
 		log("inserted");
 	} catch (Exception e) { log(e.msg); assert(false); }
 
@@ -851,7 +836,7 @@ unittest {
 
 	try {
 		log("SELECT from alltypes");
-		auto res = cassandra.select(`SELECT * FROM alltypes`);
+		auto res = cassandra.query(`SELECT * FROM alltypes`, Consistency.any);
 		auto rows = res.rows();
 		log("got %d rows", rows.length);
 		log("%s", rows[0]);

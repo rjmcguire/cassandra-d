@@ -37,10 +37,17 @@ struct CassandraKeyspace {
 		return conn.query(q, consistency);
 	}
 
-	CassandraResult select(string q, Consistency consistency = Consistency.quorum)
+	PreparedStatement prepare(string q)
 	{
 		auto conn = m_client.lockConnection();
 		conn.useKeyspace(m_name);
-		return conn.select(q, consistency);
+		return conn.prepare(q);
+	}
+
+	CassandraResult execute(ARGS...)(PreparedStatement stmt, ARGS args)
+	{
+		auto conn = m_client.lockConnection();
+		// TODO: assert(stmt.keyspace is this);
+		return conn.execute(stmt, args);
 	}
 }
