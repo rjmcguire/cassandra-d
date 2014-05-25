@@ -26,7 +26,7 @@ struct CassandraTable {
 	{
 		auto sysks = m_keyspace.client.getKeyspace("system");
 		auto res = sysks.query(format(`SELECT columnfamily_name FROM schema_columnfamilies WHERE keyspace_name='%s' AND columnfamily_name='%s'`, m_keyspace.name, m_name));
-		return res.rows.length > 0;
+		return !res.empty;
 	}
 
 	ColumnDescription[] describe()

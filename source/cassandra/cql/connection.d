@@ -9,6 +9,7 @@ import std.exception : enforce;
 import std.format : formattedWrite;
 import std.range : isOutputRange;
 import std.stdint;
+import std.string : startsWith;
 import std.traits;
 
 import cassandra.internal.utils;
@@ -196,7 +197,9 @@ class Connection {
 	 *  The server will respond to a QUERY message with a RESULT message, the content
 	 *  of which depends on the query.
 	 */
-	CassandraResult query(string q, Consistency consistency = Consistency.any) {
+	CassandraResult query(string q, Consistency consistency = Consistency.one)
+	{
+		assert(!q.startsWith("PREPARE"), "use Connection.prepare to issue PREPARE statements.");
 		connect();
 		auto fh = makeHeader(FrameHeader.OpCode.query);
 		auto bytebuf = appender!(ubyte[])();
@@ -211,7 +214,9 @@ class Connection {
 
 		fh = readFrameHeader(sock, m_counter);
 		throwOnError(fh);
-		return new CassandraResult(fh, sock, m_counter);
+		auto ret = CassandraResult(fh, sock, m_counter);
+		assert(ret.kind != CassandraResult.Kind.prepared, "use Connection.prepare to issue PREPARE statements.");
+		return ret;
 	}
 
 	 /**
@@ -234,14 +239,13 @@ class Connection {
 		sock.write(bytebuf.data);
 		log("---------=-");
 
-
-
 		fh = readFrameHeader(sock, m_counter);
 		throwOnError(fh);
 		if (!fh.isRESULT) {
 			throw new Exception("CQLProtocolException, Unknown response to PREPARE command");
 		}
-		return new PreparedStatement(fh, sock, m_counter);
+		auto result = CassandraResult(fh, sock, m_counter);
+		return PreparedStatement(result);
 	}
 
 	/**
@@ -288,7 +292,7 @@ class Connection {
 		if (!fh.isRESULT) {
 			throw new Exception("CQLProtocolException, Unknown response to Execute command: "~ to!string(fh.opcode));
 		}
-		return new CassandraResult(fh, sock, m_counter);
+		return CassandraResult(fh, sock, m_counter);
 	}
 
 	/**
@@ -739,6 +743,14 @@ unittest {
 		} catch (Exception e) { log(e.msg); assert(false); }
 	}
 
+	static struct UserTableEntry {
+		string user_name;
+		string password;
+		string gender;
+		string session_token;
+		string state;
+		long birth_year;
+	}
 
 	try {
 		log("CREATE TABLE ");
@@ -752,22 +764,52 @@ unittest {
 				PRIMARY KEY (user_name)
 			  )`, Consistency.any);
 		log("created table %s %s %s %s", res.kind, res.keyspace, res.lastchange, res.table);
-	} catch (Exception e) { log(e.msg); assert(false); }
+	} catch (Exception e) { log(e.msg); }
 
 	try {
 		log("INSERT");
-		assert(cassandra.query(`INSERT INTO users
+		cassandra.query(`INSERT INTO users
 				(user_name, password)
-				VALUES ('jsmith', 'ch@ngem3a')`, Consistency.any));
+				VALUES ('jsmith', 'ch@ngem3a')`, Consistency.any);
 		log("inserted");
 	} catch (Exception e) { log(e.msg); assert(false); }
 
 	try {
 		log("SELECT");
-		auto res = cassandra.query(`SELECT * FROM users WHERE user_name='jsmith'`, Consistency.any);
-		log("select resulted in %s\n%s", res.kind, res);
+		auto res = cassandra.query(`SELECT * FROM users WHERE user_name='jsmith'`, Consistency.one);
+		log("select resulted in %s", res.toString());
+		import std.typecons : Tuple;
+		while (!res.empty) {
+			UserTableEntry entry;
+			res.readRow(entry);
+		}
 	} catch (Exception e) { log(e.msg); assert(false); }
 
+	static struct AllTypesEntry {
+		import std.bigint;
+		import std.datetime;
+		import std.uuid;
+
+		string user_name;
+		long birth_year;
+		string ascii_col; //@ascii
+		ubyte[] blob_col;
+		bool booleant_col;
+		bool booleanf_col;
+		Decimal decimal_col;
+		double double_col;
+		float float_col;
+		ubyte[] inet_col;
+		int int_col;
+		string[] list_col;
+		string[string] map_col;
+		string[] set_col;
+		string text_col;
+		SysTime timestamp_col;
+		UUID uuid_col;
+		UUID timeuuid_col;
+		BigInt varint_col;
+	}
 
 	try {
 		log("CREATE TABLE ");
@@ -795,20 +837,20 @@ unittest {
 				PRIMARY KEY (user_name)
 			  )`, Consistency.any);
 		log("created table %s %s %s %s", res.kind, res.keyspace, res.lastchange, res.table);
-	} catch (Exception e) { log(e.msg); assert(false); }
+	} catch (Exception e) { log(e.msg); }
 
 	try {
 		log("INSERT into alltypes");
-		assert(cassandra.query(`INSERT INTO alltypes (user_name,birth_year,ascii_col,blob_col,booleant_col, booleanf_col,decimal_col,double_col,float_col,inet_col,int_col,list_col,map_col,set_col,text_col,timestamp_col,uuid_col,timeuuid_col,varint_col)
+		cassandra.query(`INSERT INTO alltypes (user_name,birth_year,ascii_col,blob_col,booleant_col, booleanf_col,decimal_col,double_col,float_col,inet_col,int_col,list_col,map_col,set_col,text_col,timestamp_col,uuid_col,timeuuid_col,varint_col)
 				VALUES ('bob@domain.com', 7777777777,
 					'someasciitext', 0x2020202020202020202020202020,
 					True, False,
-					 123, 8.5, 9.44, '127.0.0.1', 999,
+					 123.456, 8.5, 9.44, '127.0.0.1', 999,
 					['li1','li2','li3'], {'blurg':'blarg'}, { 'kitten', 'cat', 'pet' },
 					'some text col value', 'now', aaaaaaaa-eeee-cccc-9876-dddddddddddd,
 					 now(),
-					9494949449
-					)`, Consistency.any));
+					-9494949449
+					)`, Consistency.any);
 		log("inserted");
 	} catch (Exception e) { log(e.msg); assert(false); }
 
@@ -819,7 +861,7 @@ unittest {
 				, float_col, inet_col, int_col, list_col, map_col, set_col, text_col, timestamp_col
 				, uuid_col, timeuuid_col, varint_col)`
 				` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-		log("%s", stmt);
+		log("prepared stmt: %s", stmt);
 		alias long Bigint;
 		alias double Double;
 		alias float Float;
@@ -836,11 +878,14 @@ unittest {
 
 	try {
 		log("SELECT from alltypes");
-		auto res = cassandra.query(`SELECT * FROM alltypes`, Consistency.any);
-		auto rows = res.rows();
-		log("got %d rows", rows.length);
-		log("%s", rows[0]);
-		log("select resulted in CassandraResult.Kind.%s\n%s", res.kind, res);
+		auto res = cassandra.query(`SELECT * FROM alltypes`, Consistency.one);
+		log("select resulted in %s", res.toString());
+
+		while (!res.empty) {
+			AllTypesEntry entry;
+			res.readRow(entry);
+			log("ROW: %s", entry);
+		}
 	} catch (Exception e) { log(e.msg); assert(false); }
 
 

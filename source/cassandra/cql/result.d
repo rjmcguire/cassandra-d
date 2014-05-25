@@ -3,12 +3,14 @@ module cassandra.cql.result;
 public import cassandra.cql.utils;
 
 import std.array;
+import std.bigint;
 import std.bitmanip : bitfields;
 import std.conv;
 import std.exception : enforce;
 import std.format : formattedWrite;
 import std.range : isOutputRange;
 import std.stdint;
+import std.string : format;
 import std.traits;
 
 import cassandra.internal.utils;
@@ -16,7 +18,7 @@ import cassandra.internal.tcpconnection;
 
 
 
-class CassandraResult {
+struct CassandraResult {
 	/*
 	 *4.2.5. RESULT
 	 *
@@ -101,7 +103,7 @@ class CassandraResult {
 		int* m_counterP;
 		@property ref int m_counter() { return *m_counterP; }
 		MetaData m_metadata;
-		ubyte[][][] m_rows;
+		int m_rowCount;
 	}
 
 	this(FrameHeader fh, TCPConnection sock, ref int counter)
@@ -115,20 +117,138 @@ class CassandraResult {
 		
 		final switch (m_kind) {
 			case Kind.void_: readVoid(); break;
-			case Kind.rows: readRows(); break;
+			case Kind.rows:
+				readRowMetaData();
+				readIntNotNULL(m_rowCount, m_sock, m_counter);
+				break;
 			case Kind.setKeyspace: readSet_keyspace(); break;
-			case Kind.prepared: readPrepared(); break;
+			case Kind.prepared: break; // ignored and handled by PreparedStatement later
 			case Kind.schemaChange: readSchema_change(); break;
 		}
 	}
+
+	~this()
+	{
+		while (!empty) dropRow();
+	}
+
+	@disable this(this);
 
 	@property Kind kind() { return m_kind; }
 	@property string lastchange() { return m_lastChange; }
 	@property string keyspace() { return m_currentKeyspace; }
 	@property string table() { return m_currentTable; }
 	@property MetaData metadata() { return m_metadata; }
-	@property auto rows() { assert(m_kind == Kind.rows); return m_rows; }
 
+	bool empty() const { return m_kind != Kind.rows || m_rowCount == 0; }
+
+	void readRow(ROW)(ref ROW dst)
+		if (is(ROW == struct))
+	{
+		import std.typecons : Nullable;
+
+		assert(!empty);
+
+		foreach (ref col; m_metadata.column_specs) {
+			auto tp = col.type.id;
+			switch (col.name) {
+				default:
+					log("Ignoring unknown column %s in result.", col.name);
+					break;
+				foreach (mname; __traits(allMembers, ROW))
+					static if (is(typeof(__traits(getMember, dst, mname) = __traits(getMember, dst, mname)))) {
+						case mname:
+							try {
+								if (!readField(__traits(getMember, dst, mname), tp)) {
+									static if (isInstanceOf!(Nullable, typeof(__traits(getMember, dst, mname))))
+										__traits(getMember, dst, mname).nullify();
+									else __traits(getMember, dst, mname) = __traits(getMember, ROW.init, mname);
+								}
+							} catch (Exception e) {
+								throw new Exception("Failed to read field "~mname~" of type "~to!string(tp)~": "~e.msg);
+							}
+							break;
+					}
+
+			}
+		}
+
+		m_rowCount--;
+	}
+
+	private bool readField(T)(ref T dst, Option.Type type)
+	{
+		import std.typecons : Nullable;
+		import std.bitmanip : read;
+		import std.bigint;
+		import std.datetime;
+		import std.uuid;
+
+		auto len = readBigEndian!int(m_sock, m_counter);
+		if (len < 0) return false;
+
+		static if (isInstanceOf!(Nullable, T)) alias FT = typeof(dst.get());
+		else alias FT = T;
+
+		auto buf = new ubyte[len];
+		m_sock.read(buf);
+		m_counter -= len;
+
+		log("FIELD %s: %s", type, buf);
+
+		// TODO:
+		//   Option.Type.inet:
+		//   Option.Type.list:
+		//   Option.Type.map:
+		//   Option.Type.set:
+
+		static if (is(FT == bool)) {
+			enforce(type == Option.Type.boolean, "Expected boolean");
+			dst = buf[0] != 0;
+		} else static if (is(FT == int)) {
+			enforce(type == Option.Type.int_, "Expected 32-bit integer");
+			dst = read!int(buf);
+		} else static if (is(FT == long)) {
+			enforce(type == Option.Type.bigInt, "Expected 64-bit integer");
+			dst = read!long(buf);
+		} else static if (is(FT : const(string))) {
+			with (Option.Type)
+				enforce(type == varChar || type == text || type == ascii, "Expected string");
+			dst = cast(FT)buf;
+		} else static if (is(FT : const(ubyte)[])) {
+			//enforce(type == Option.Type.blob, "Expected binary blob");
+			dst = cast(FT)buf;
+		} else static if (is(FT == float)) {
+			enforce(type == Option.Type.float_, "Expected 32-bit float");
+			dst = read!float(buf);
+		} else static if (is(FT == double)) {
+			enforce(type == Option.Type.double_, "Expected 64-bit float");
+			dst = read!double(buf);
+		} else static if (is(FT == SysTime)) {
+			enforce(type == Option.Type.timestamp, "Expected timestamp");
+			enum unix_base = unixTimeToStdTime(0);
+			dst = SysTime(buf.read!long * 10_000 + unix_base, UTC());
+		} else static if (is(FT == UUID)) {
+			with (Option.Type)
+				enforce(type == uuid || type == timeUUID, "Expected string");
+			dst = UUID(buf[0 .. 16]);
+		} else static if (is(FT == BigInt)) {
+			enforce(type == Option.Type.varInt, "Expected timestamp");
+			readBigInt(dst, buf);
+		} else static if (is(FT == Decimal)) {
+			enforce(type == Option.Type.decimal, "Expected decimal number");
+			dst.exponent = read!int(buf);
+			readBigInt(dst.number, buf);
+		} //else static assert(false, "Unsupported result type: "~FT.stringof);
+
+		return true;
+	}
+
+	void dropRow()
+	{
+		readRowContent();
+		m_rowCount--;
+	}
 
 	/*
 	 *4.2.5.1. Void
@@ -136,7 +256,7 @@ class CassandraResult {
 	 *  The rest of the body for a Void result is empty. It indicates that a query was
 	 *  successful without providing more information.
 	 */
-	void readVoid() { assert(m_kind == Kind.void_); }
+	private void readVoid() { assert(m_kind == Kind.void_); }
 
 	/*
 	 *4.2.5.2. Rows
@@ -144,16 +264,9 @@ class CassandraResult {
 	 *  Indicates a set of rows. The rest of body of a Rows result is:
 	 *    <metadata><rows_count><rows_content>
 	 */
-	auto readRows()
+	private void readRowMetaData()
 	{
 		assert(m_kind == Kind.rows || m_kind == Kind.prepared);
-		m_metadata = readRowMetaData();
-		// <rows_count> is read within readRowsContent
-		m_rows = readRowsContent();
-	}
-
-	MetaData readRowMetaData()
-	{
 		auto md = MetaData();
 		md.flags.readIntNotNULL(m_sock, m_counter);
 		md.columns_count.readIntNotNULL(m_sock, m_counter);
@@ -163,7 +276,7 @@ class CassandraResult {
 		}
 		md.column_specs = readColumnSpecifications(md.flags & MetaData.GLOBAL_TABLES_SPEC, md.columns_count);
 		log("got spec: ", md);
-		return md;
+		m_metadata = md;
 	}
 
 	/*       - <col_spec_i> specifies the columns returned in the query. There is
@@ -200,7 +313,7 @@ class CassandraResult {
 	 *            0x0022    Set: the value is an [option], representing the type
 	 *                            of the elements of the set
 	 */
-	Option* readOption()
+	private Option* readOption()
 	{
 		auto ret = new Option();
 		ret.id = cast(Option.Type)readShort(m_sock, m_counter);
@@ -239,7 +352,10 @@ class CassandraResult {
 		string name;
 		Option type;
 	}
-	protected auto readColumnSpecification(bool hasGlobalTablesSpec) {
+
+	string toString() const { return format("Result(%s)", m_kind); }
+
+	private auto readColumnSpecification(bool hasGlobalTablesSpec) {
 		ColumnSpecification ret;
 		if (!hasGlobalTablesSpec) {
 			ret.ksname = readShortString(m_sock, m_counter);
@@ -249,7 +365,7 @@ class CassandraResult {
 		ret.type = *readOption();
 		return ret;
 	}
-	protected auto readColumnSpecifications(bool hasGlobalTablesSpec, int column_count) {
+	private auto readColumnSpecifications(bool hasGlobalTablesSpec, int column_count) {
 		ColumnSpecification[] ret;
 		for (int i=0; i<column_count; i++) {
 			ret ~= readColumnSpecification(hasGlobalTablesSpec);
@@ -265,17 +381,7 @@ class CassandraResult {
 	 *      returned for the jth column of the ith row. In other words, <rows_content>
 	 *      is composed of (<rows_count> * <columns_count>) [bytes].
 	 */
-	protected auto readRowsContent()
-	{
-		int count;
-		auto tmp = readIntNotNULL(count, m_sock, m_counter);
-		ReturnType!readRowContent[] ret;
-		//log("reading %d rows", count);
-		foreach (i; 0 .. count)
-			ret ~= readRowContent();
-		return ret;
-	}
-	protected auto readRowContent()
+	private auto readRowContent()
 	{
 		ubyte[][] ret;
 		foreach (i; 0 .. m_metadata.columns_count) {
@@ -335,29 +441,12 @@ class CassandraResult {
 	 *  The result to a `use` query. The body (after the kind [int]) is a single
 	 *  [string] indicating the name of the keyspace that has been set.
 	 */
-	protected string readSet_keyspace() {
+	private string readSet_keyspace() {
 		assert(m_kind is Kind.setKeyspace);
 		return readShortString(m_sock, m_counter);
 	}
 
-	/**
-	 *4.2.5.4. Prepared
-	 *
-	 *  The result to a PREPARE message. The rest of the body of a Prepared result is:
-	 *    <id><metadata>
-	 *  where:
-	 *    - <id> is [short bytes] representing the prepared query ID.
-	 *    - <metadata> is defined exactly as for a Rows RESULT (See section 4.2.5.2).
-	 *
-	 *  Note that prepared query ID return is global to the node on which the query
-	 *  has been prepared. It can be used on any connection to that node and this
-	 *  until the node is restarted (after which the query must be reprepared).
-	 */
-	protected void readPrepared() {
-		assert(false, "Not a Prepare CassandraResult class type");
-	}
-
-	protected void readSchema_change()
+	private void readSchema_change()
 	{
 		assert(m_kind is Kind.schemaChange);
 		m_lastChange = cast(Change)readShortString(m_sock, m_counter);
@@ -366,33 +455,71 @@ class CassandraResult {
 	}
 }
 
-class PreparedStatement : CassandraResult {
+struct PreparedStatement {
 	private {
 		ubyte[] m_id;
 		Consistency m_consistency = Consistency.any;
 	}
 
-	this(FrameHeader fh, TCPConnection sock, ref int counter)
+	this(ref CassandraResult result)
 	{
-		super(fh, sock, counter);
-
-		if (kind != CassandraResult.Kind.prepared)
+		if (result.kind != CassandraResult.Kind.prepared)
 			throw new Exception("CQLProtocolException, Unknown result type for PREPARE command");
+
+		/*
+		 *4.2.5.4. Prepared
+		 *
+		 *  The result to a PREPARE message. The rest of the body of a Prepared result is:
+		 *    <id><metadata>
+		 *  where:
+		 *    - <id> is [short bytes] representing the prepared query ID.
+		 *    - <metadata> is defined exactly as for a Rows RESULT (See section 4.2.5.2).
+		 *
+		 *  Note that prepared query ID return is global to the node on which the query
+		 *  has been prepared. It can be used on any connection to that node and this
+		 *  until the node is restarted (after which the query must be reprepared).
+		 */
+		assert(result.kind is CassandraResult.Kind.prepared);
+		log("reading id");
+		m_id = readShortBytes(result.m_sock, result.m_counter);
+		log("reading metadata");
+		/*m_metadata =*/ result.readRowMetaData();
+		log("done reading prepared stmt");
 	}
 
 	@property const(ubyte)[] id() const { return m_id; }
-	@property ref inout(Consistency) consistency() inout { return m_consistency; }
 
-	/// See section 4.2.5.4.
-	protected override void readPrepared()
-	{
-		assert(m_kind is Kind.prepared);
-		m_id = readShortBytes(m_sock, m_counter);
-		m_metadata = readRowMetaData();
-	}
+	@property Consistency consistency() const { return m_consistency; }
+	@property void consistency(Consistency value) { m_consistency = value; }
 
-	override string toString() { return "PreparedStatement("~id.hex~")"; }
+	string toString() const { return format("PreparedStatement(%s)", id.hex); }
 }
 
-// some types
-static assert(int.sizeof == 4, "int is not 32 bits"~ to!string(int.sizeof));
+struct Decimal {
+	import std.bigint;
+	int exponent; // 10 ^ -exp
+	BigInt number;
+
+	string toString() const {
+		auto buf = appender!string();
+		number.toString(str => buf.put(str), "%d");
+		if (exponent <= 0) return buf.data;
+		else return buf.data[0 .. $-exponent] ~ "." ~ buf.data[$-exponent .. $];
+	}
+}
+
+private void readBigInt(ref BigInt dst, in ubyte[] bytes)
+{
+	auto strbuf = appender!string();
+	strbuf.reserve(bytes.length*2 + 3);
+	if (bytes[0] < 0x80) {
+		strbuf.put("0x");
+		foreach (b; bytes) strbuf.formattedWrite("%02X", b);
+	} else {
+		strbuf.put("-0x");
+		foreach (b; bytes) strbuf.formattedWrite("%02X", ~b);
+	}
+	log(strbuf.data);
+	dst = BigInt(strbuf.data);
+	if (bytes[0] >= 0x80) dst--; // FIXME: this is not efficient
+}

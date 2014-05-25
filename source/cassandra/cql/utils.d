@@ -250,6 +250,16 @@ package struct FrameHeader {
 	}
 }
 
+package T readBigEndian(T)(TCPConnection conn, ref int counter)
+{
+	import std.bitmanip : read;
+	ubyte[T.sizeof] buf;
+	conn.read(buf);
+	counter -= T.sizeof;
+	ubyte[] rng = buf;
+	return std.bitmanip.read!T(rng);
+}
+
 
 package int getIntLength(Appender!(ubyte[]) appender) {
 	enforce(appender.data.length < int.max);
@@ -795,11 +805,13 @@ string toCQLString(T)(T value)
 		return to!string(value);
 	else static if (isSomeString!T) {
 		auto ret = appender!string();
-		ret.reserve(value.length);
+		ret.reserve(value.length+2);
+		ret.put('\'');
 		foreach (dchar ch; value) {
 			if (ch == '\'') ret.put("''");
 			else ret.put(ch);
 		}
+		ret.put('\'');
 		return ret.data;
 	} else static assert(false, "Type "~T.stringof~" isn't implemented.");
 }
