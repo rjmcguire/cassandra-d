@@ -1,32 +1,22 @@
 module cassandra.schema;
 
-import cassandra.cql;
-import cassandra.client;
+import cassandra.keyspace;
+import cassandra.internal.utils;
+
 
 struct CassandraSchema {
-	CassandraClient client_;
-	string schema_;
-	this(CassandraClient client, string schema) {
-		client_ = client;
-		schema_ = schema_;
-
-		auto conn = client_.lockConnection;
-		conn.query("use clearformat", Consistency.ANY);
-
+	private {
+		CassandraKeyspace m_keyspace;
+		string m_name;
 	}
 
-	@property
-	string schema() { return schema_; }
+	this(CassandraKeyspace keyspace, string schema_name)
+	{
+		enforceValidIdentifier(schema_name);
 
-	auto describeTable(string table) {
-		auto conn = client_.lockConnection;
-		auto res = conn.select("SELECT * FROM "~ table);
-		Option[string] ret;
-		foreach (cs; res.metadata.column_specs) {
-			ret[cs.name] = cs.type;
-		}
-		return ret;
+		m_keyspace = keyspace;
+		m_name = schema_name;
 	}
 
-
+	@property string name() const { return m_name; }
 }

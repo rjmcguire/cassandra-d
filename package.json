@@ -1,11 +1,12 @@
 {
 	"name": "cassandra-d",
-	"description": "An example project skeleton",
-	"homepage": "http://example.org",
-	"copyright": "Copyright © 2000, Your Name",
-	"authors": [
-		"Your Name"
-	],
+	"description": "Cassandra database client",
+	"copyright": "Copyright © 2013 Rory McGuire, Copyright © 2013-2014 Sönke Ludwig",
+	"license": "MIT",
+	"authors": ["Rory McGuire", "Sönke Ludwig"],
 	"dependencies": {
-	}
+		"vibe-d": {"version": "~>0.7.19", "optional": true}
+	},
+	"targetType": "library",
+	"-ddoxFilterArgs": ["--min-protection=Protected", "--ex=cassandra.internal."]
 }

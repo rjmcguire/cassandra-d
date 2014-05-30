@@ -1,22 +1,27 @@
 cassandra-d
 ===========
 
-D language cassandra client (currently binary api v1 and v2)
+D language cassandra client (currently binary API v1 and v2).
 
 Currently this driver can be used to create / insert / update / delete data in a cassandra datastore.
 
 There are currently no helpers, you can only execute CQL inputting or retrieving data.
 
-#### Works:
+## Fork note
+
+This fork adds support for DUB and cleans up the source code and API.
+
+## Working
 - Queries
 - Prepared Statements
 
-### Todo:
+## TODO
 - UUID stuff
 - Authenticators
 - Provide helper functions/templates
 
-build the test with:
+## Building the test
+
 - cd source/cassandra
 - dmd -main -unittest cql.d serialize.d utils.d tcpconnection.d
 OR

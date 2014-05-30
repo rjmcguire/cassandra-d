@@ -1,3 +1,5 @@
+module cassandra.internal.utils;
+
 import std.array : appender;
 import std.format : formattedWrite;
 
@@ -8,6 +10,20 @@ string hex(T)(T v) {
 		formattedWrite(buf, "%x ", b);
 	}
 	return buf.data;
+}
+
+void enforceValidIdentifier(string text)
+{
+	foreach (ch; text) {
+		switch (ch) {
+			default: throw new Exception("Invalid identifier, '"~text~"'.");
+			case 'a': .. case 'z':
+			case 'A': .. case 'Z':
+			case '0': .. case '9':
+			case '_':
+				break;
+		}
+	}
 }
 
 /*void print(ubyte[] data) {
