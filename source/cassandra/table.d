@@ -1,5 +1,6 @@
 module cassandra.table;
 
+import cassandra.cql.result;
 import cassandra.cql.utils;
 import cassandra.keyspace;
 import cassandra.internal.utils;
@@ -38,8 +39,8 @@ struct CassandraTable {
 	void insert(T)(T fields)
 		if (is(T == struct) || is(T == class))
 	{
-		auto column_names = [__traits(allMembers, T)].join(", ");
-		auto column_values = [__traits(allMembers, T)].map!(m => toCQLString(m)).array.join(", ");
+		auto column_names = fieldNames!T[].join(", ");
+		auto column_values = valueStrings(fields)[].join(", ");
 		auto str = format("INSERT INTO %s (%s) VALUES (%s)", m_name, column_names, column_values);
 		m_keyspace.query(str, Consistency.any);
 	}
@@ -48,9 +49,38 @@ struct CassandraTable {
 	{
 		m_keyspace.query("TRUNCATE "~m_name);
 	}
+
+	CassandraResult select(string expr = null/*, order, limit*/)
+	{
+		string query = "SELECT * FROM "~m_name;
+		if (expr) query ~= "WHERE "~expr;
+		return m_keyspace.query(query);
+	}
+
+	void createIndex(string column, string custom_class = null)
+	{
+		m_keyspace.query(format("CREATE %sINDEX ON %s.%s (%s) %s",
+			custom_class.length ? "CUSTOM " : "", m_keyspace.name, m_name, column,
+			custom_class.length ? " USING " ~ custom_class : ""));
+	}
 }
 
 struct ColumnDescription {
 	string name;
 	Option type;
+}
+
+private string[T.tupleof.length] fieldNames(T)()
+{
+	string[T.tupleof.length] ret;
+	foreach (i, FT; typeof(T.tupleof))
+		ret[i] = __traits(identifier, T.tupleof[i]);
+	return ret;
+}
+private string[T.tupleof.length] valueStrings(T)(T fields)
+{
+	string[T.tupleof.length] ret;
+	foreach (i, F; fields.tupleof)
+		ret[i] = toCQLString(F);
+	return ret;
 }
