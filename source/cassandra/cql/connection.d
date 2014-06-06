@@ -291,7 +291,7 @@ class Connection {
 
 		fh.length = bytebuf.getIntLength;
 		sock.write(fh.bytes);
-		log("Sending: ", bytebuf.data);
+		log("Sending: %s", bytebuf.data);
 		sock.write(bytebuf.data);
 		log("-----=----=-");
 

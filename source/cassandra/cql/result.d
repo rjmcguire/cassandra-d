@@ -19,6 +19,8 @@ import std.traits;
 
 
 struct CassandraResult {
+	import std.typecons;
+
 	/*
 	 *4.2.5. RESULT
 	 *
@@ -94,16 +96,19 @@ struct CassandraResult {
 	}
 
 	private {
+		// conceptually immutable:
 		Change m_lastChange;
 		string m_currentKeyspace;
 		string m_currentTable;
 		FrameHeader m_fh;
 		Kind m_kind;
 		TCPConnection m_sock;
+		MetaData m_metadata;
+
+		// counters
 		int* m_counterP;
 		@property ref int m_counter() { return *m_counterP; }
-		MetaData m_metadata;
-		int m_rowCount;
+		RefCounted!int m_rowCount; // keep the remaining row count consistent when CassandraResult gets copied
 		Connection.Lock m_lock;
 	}
 
@@ -277,7 +282,7 @@ struct CassandraResult {
 			md.global_table_spec[1] = readShortString(m_sock, m_counter);
 		}
 		md.column_specs = readColumnSpecifications(md.flags & MetaData.GLOBAL_TABLES_SPEC, md.columns_count);
-		log("got spec: ", md);
+		log("got spec: %s", md);
 		m_metadata = md;
 	}
 
