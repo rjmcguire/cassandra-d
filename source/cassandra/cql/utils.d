@@ -820,7 +820,7 @@ protected void log(Args...)(string s, Args args)
 {
 	version (Have_vibe_d) {
 		import vibe.core.log;
-		logInfo(s, args);
+		logDebug(s, args);
 	} else {
 		import std.stdio;
 		writefln(s, args);
