@@ -133,7 +133,7 @@ struct CassandraResult {
 		}
 
 		if (m_rowCount) {
-			assert(lock != Connection.Lock.init);
+			assert(lock !is Connection.Lock.init);
 			m_lock = lock;
 		}
 	}
@@ -182,7 +182,7 @@ struct CassandraResult {
 			}
 		}
 
-		if (!--m_rowCount) m_lock.destroy();
+		if (!--m_rowCount) m_lock = Connection.Lock.init;
 	}
 
 	private bool readField(T)(ref T dst, Option.Type type)
@@ -254,7 +254,7 @@ struct CassandraResult {
 	void dropRow()
 	{
 		readRowContent();
-		if (!--m_rowCount) m_lock.destroy();
+		if (!--m_rowCount) m_lock = Connection.Lock.init;
 	}
 
 	/*

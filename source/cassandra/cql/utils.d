@@ -254,9 +254,9 @@ package T readBigEndian(T)(TCPConnection conn, ref int counter)
 {
 	import std.bitmanip : read;
 	ubyte[T.sizeof] buf;
-	conn.read(buf);
-	counter -= T.sizeof;
 	ubyte[] rng = buf;
+	conn.read(rng);
+	counter -= T.sizeof;
 	return std.bitmanip.read!T(rng);
 }
 

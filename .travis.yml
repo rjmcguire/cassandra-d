@@ -1,0 +1,17 @@
+language: d
+sudo: false
+
+services:
+  - cassandra
+
+env:
+  - USE_VIBED=1
+  - USE_VIBED=0
+
+script:
+  - |-
+    if [ $USE_VIBED == 1 ]; then
+      jq '.dependencies."vibe-d".optional = false' < package.json > __replace
+      mv __replace package.json
+    fi
+  - dub test
