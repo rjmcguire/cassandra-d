@@ -7,6 +7,8 @@ Currently this driver can be used to create / insert / update / delete data in a
 
 There are currently no helpers, you can only execute CQL inputting or retrieving data.
 
+[![Build Status](https://travis-ci.org/s-ludwig/cassandra-d.svg?branch=master)](https://travis-ci.org/s-ludwig/cassandra-d)
+
 ## Fork note
 
 This fork adds support for DUB and cleans up the source code and API.
