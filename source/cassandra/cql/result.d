@@ -133,7 +133,7 @@ struct CassandraResult {
 		}
 
 		if (m_rowCount) {
-			assert(lock != Connection.Lock.init);
+			assert(lock !is Connection.Lock.init);
 			m_lock = lock;
 		}
 	}
