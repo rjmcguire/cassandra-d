@@ -11,7 +11,7 @@ env:
 script:
   - |-
     if [ $USE_VIBED == 1 ]; then
-      jq '.dependencies."vibe-d".optional = false' < package.json > __replace
-      mv __replace package.json
+      dub test --compiler=$DC
+    else
+      dub test --compiler=$DC --config=library-no-vibe
     fi
-  - dub test
