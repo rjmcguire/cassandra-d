@@ -3,6 +3,7 @@ module cassandra.cassandradb;
 public import cassandra.client;
 
 import cassandra.cql.connection;
+import cassandra.internal.utils : log;
 
 
 /**
@@ -146,7 +147,7 @@ unittest {
 		auto stmt = ks.prepare(`INSERT INTO alltypes (user_name,birth_year, ascii_col, blob_col, booleant_col, booleanf_col, decimal_col, double_col
 				, float_col, inet_col, int_col, list_col, map_col, set_col, text_col, timestamp_col
 				, uuid_col, timeuuid_col, varint_col)`
-				` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+				~` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 		log("prepared stmt: %s", stmt);
 		alias long Bigint;
 		alias double Double;

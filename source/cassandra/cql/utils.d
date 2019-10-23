@@ -252,7 +252,7 @@ package struct FrameHeader {
 
 package T readBigEndian(T)(TCPConnection conn, ref int counter)
 {
-	import std.bitmanip : read;
+	static import std.bitmanip;
 	ubyte[T.sizeof] buf;
 	ubyte[] rng = buf;
 	conn.read(rng);

@@ -26,6 +26,14 @@ void enforceValidIdentifier(string text)
 	}
 }
 
+void log(ARGS...)(string format, ARGS args)
+{
+	version (Have_vibe_core) {
+		import vibe.core.log;
+		logDebug(format, args);
+	}
+}
+
 /*void print(ubyte[] data) {
 	import std.ascii;
 	foreach (d1; data) {

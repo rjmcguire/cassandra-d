@@ -524,7 +524,7 @@ private void readBigInt(ref BigInt dst, in ubyte[] bytes)
 		foreach (b; bytes) strbuf.formattedWrite("%02X", b);
 	} else {
 		strbuf.put("-0x");
-		foreach (b; bytes) strbuf.formattedWrite("%02X", ~b);
+		foreach (b; bytes) strbuf.formattedWrite("%02X", cast(ubyte)~cast(int)b);
 	}
 	log(strbuf.data);
 	dst = BigInt(strbuf.data);
