@@ -19,6 +19,6 @@ There are currently no helpers, you can only execute CQL inputting or retrieving
 ## Building the test
 
 - cd source/cassandra
-- dmd -main -unittest cql.d serialize.d utils.d tcpconnection.d
+- dmd -main -unittest cql/*.d *.d internal/*.d -ofrun_unittests 
 OR
-- dmd -main -unittest cql.d serialize.d utils.d tcpconnection.d -version=CassandraV2
+- dmd -main -unittest cql/*.d *.d internal/*.d -ofrun_unittests -version=CassandraV2

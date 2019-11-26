@@ -128,7 +128,7 @@ struct CassandraResult {
 		}
 
 		if (m_rowCount) {
-			assert(lock != Connection.Lock.init);
+			assert(lock !is Connection.Lock.init);
 			m_lock = lock;
 		}
 	}
@@ -519,7 +519,7 @@ private void readBigInt(ref BigInt dst, in ubyte[] bytes)
 		foreach (b; bytes) strbuf.formattedWrite("%02X", b);
 	} else {
 		strbuf.put("-0x");
-		foreach (b; bytes) strbuf.formattedWrite("%02X", ~b);
+		foreach (b; bytes) strbuf.formattedWrite("%02X", ~cast(int)b);
 	}
 	log(strbuf.data);
 	dst = BigInt(strbuf.data);

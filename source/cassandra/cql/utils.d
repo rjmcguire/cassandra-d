@@ -252,8 +252,9 @@ package struct FrameHeader {
 
 package T readBigEndian(T)(TCPConnection conn, ref int counter)
 {
-	import std.bitmanip : read;
-	ubyte[T.sizeof] buf;
+	import std.bitmanip;
+	//ubyte[T.sizeof] buf;
+	auto buf = new ubyte[T.sizeof];
 	conn.read(buf);
 	counter -= T.sizeof;
 	ubyte[] rng = buf;
@@ -816,7 +817,7 @@ string toCQLString(T)(T value)
 	} else static assert(false, "Type "~T.stringof~" isn't implemented.");
 }
 
-protected void log(Args...)(string s, Args args)
+public void log(Args...)(string s, Args args)
 {
 	version (Have_vibe_d) {
 		import vibe.core.log;

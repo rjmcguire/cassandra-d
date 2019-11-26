@@ -1,6 +1,7 @@
 module cassandra.cql.connection;
 
 public import cassandra.cql.result;
+import cassandra.cql.utils;
 
 import std.array;
 import std.bitmanip : bitfields;
